@@ -1,0 +1,17 @@
+# Visual Studio / CMake
+.vs/
+out/
+build/
+CMakeUserPresets.json
+*.user
+*.suo
+# vcpkg
+vcpkg_installed/
+# Python (used from hour 2.5 onward)
+__pycache__/
+.venv/
+*.pyd
+# RL artifacts
+runs/
+*.zip
+models/

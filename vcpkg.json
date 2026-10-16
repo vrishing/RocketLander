@@ -1,0 +1,9 @@
+{
+  "name": "rocket-lander",
+  "version-string": "0.1.0",
+  "builtin-baseline": "d68ef4ca5b0036a2f7e4f96fa9af96f01c3472b3",
+  "dependencies": [
+    "glm",
+    "gtest"
+  ]
+}
