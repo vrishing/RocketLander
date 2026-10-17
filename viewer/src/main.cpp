@@ -1,5 +1,5 @@
 // Viewer: window, input, camera, and the fixed-timestep loop.
-// Physics lives in physics/ (no graphics). Drawing lives in Renderer. UI lives in Ui.
+// Physics lives in physics/ (no graphics). Drawing lives in Renderer.
 
 #include <GL/glew.h>
 #include <SDL.h>
@@ -14,34 +14,33 @@
 
 #include "Renderer.h"
 #include "Tuning.h"
-#include "Ui.h"
 #include "rocketphys/World.h"
 
 namespace {
 
-constexpr float kBoxSize = 1.0f;                       // the cube is 1 x 1 x 1 m
-const glm::vec3 kStartPosition{0.0f, 5.0f, 0.0f};
+    constexpr float kBoxSize = 1.0f;  // the cube is 1 x 1 x 1 m
+    const glm::vec3 kStartPosition{ 0.0f, 5.0f, 0.0f };
 
-// Push the slider values into the physics world and body.
-void ApplyTuning(rocketphys::World& world, std::size_t id, const Tuning& t) {
-    world.SetGravity({0.0f, -t.gravity, 0.0f});
-    world.SetRestitution(t.restitution);
+    // Push the tuning values into the physics world and body.
+    void ApplyTuning(rocketphys::World& world, std::size_t id, const Tuning& t) {
+        world.SetGravity({ 0.0f, -t.gravity, 0.0f });
+        world.SetRestitution(t.restitution);
 
-    rocketphys::RigidBody& body = world.GetBody(id);
-    body.SetMass(t.mass);                                    // must come before inertia
-    body.SetBoxInertia(kBoxSize, kBoxSize, kBoxSize);
-}
+        rocketphys::RigidBody& body = world.GetBody(id);
+        body.SetMass(t.mass);  // must come before inertia
+        body.SetBoxInertia(kBoxSize, kBoxSize, kBoxSize);
+    }
 
-void ResetBody(rocketphys::World& world, std::size_t id) {
-    rocketphys::RigidBody& body = world.GetBody(id);
-    body.SetPosition(kStartPosition);
-    body.SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-    body.ZeroMotion();
-}
+    void ResetBody(rocketphys::World& world, std::size_t id) {
+        rocketphys::RigidBody& body = world.GetBody(id);
+        body.SetPosition(kStartPosition);
+        body.SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        body.ZeroMotion();
+    }
 
-bool IsGrounded(const rocketphys::RigidBody& body) {
-    return body.GetPosition().y - body.GetHalfHeight() <= 0.02f;
-}
+    bool IsGrounded(const rocketphys::RigidBody& body) {
+        return body.GetPosition().y - body.GetHalfHeight() <= 0.02f;
+    }
 
 }  // namespace
 
@@ -78,8 +77,6 @@ int main(int /*argc*/, char** /*argv*/) {
 
     Renderer renderer;
     if (!renderer.Init()) return 1;
-    Ui ui;
-    ui.Init(window, glContext);
 
     // ---------- Simulation ----------
     Tuning tuning = Tuning::Defaults();
@@ -101,56 +98,50 @@ int main(int /*argc*/, char** /*argv*/) {
     double accumulator = 0.0;
     Uint64 previous = SDL_GetPerformanceCounter();
     const double freq = static_cast<double>(SDL_GetPerformanceFrequency());
-    float fps = 60.0f;
     bool running = true;
 
     while (running) {
         // ---- Events ----
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            ui.ProcessEvent(e);
             if (e.type == SDL_QUIT) running = false;
 
-            if (e.type == SDL_KEYDOWN && !e.key.repeat && !ui.WantsKeyboard()) {
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                 switch (e.key.keysym.sym) {
-                    case SDLK_ESCAPE: running = false; break;
-                    case SDLK_r: ResetBody(world, cubeId); break;
-                    case SDLK_SPACE: {
-                        rocketphys::RigidBody& b = world.GetBody(cubeId);
-                        if (IsGrounded(b)) {
-                            glm::vec3 v = b.GetVelocity();
-                            v.y += tuning.jumpSpeed;
-                            b.SetVelocity(v);
-                        }
-                        break;
+                case SDLK_ESCAPE: running = false; break;
+                case SDLK_r: ResetBody(world, cubeId); break;
+                case SDLK_SPACE: {
+                    rocketphys::RigidBody& b = world.GetBody(cubeId);
+                    if (IsGrounded(b)) {
+                        glm::vec3 v = b.GetVelocity();
+                        v.y += tuning.jumpSpeed;
+                        b.SetVelocity(v);
                     }
-                    default: break;
+                    break;
+                }
+                default: break;
                 }
             }
-            if (e.type == SDL_MOUSEWHEEL && !ui.WantsMouse()) {
+            if (e.type == SDL_MOUSEWHEEL) {
                 camDistance = std::clamp(camDistance - static_cast<float>(e.wheel.y), 4.0f, 40.0f);
             }
         }
 
         // ---- Timing ----
         const Uint64 now = SDL_GetPerformanceCounter();
-        double frameTime = static_cast<double>(now - previous) / freq;
+        const double frameTime = static_cast<double>(now - previous) / freq;
         previous = now;
-        if (frameTime > 0.0) fps = 0.95f * fps + 0.05f * static_cast<float>(1.0 / frameTime);
         accumulator += std::min(frameTime, 0.25);  // clamp: avoids a spiral of death after a stall
 
         // ---- Held keys (read once per frame, applied every physics step) ----
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
-        const bool typing = ui.WantsKeyboard();
-        const bool w = !typing && keys[SDL_SCANCODE_W];
-        const bool s = !typing && keys[SDL_SCANCODE_S];
-        const bool a = !typing && keys[SDL_SCANCODE_A];
-        const bool d = !typing && keys[SDL_SCANCODE_D];
-        if (!typing) {
-            const float orbit = 1.5f * static_cast<float>(frameTime);
-            if (keys[SDL_SCANCODE_Q]) camYaw -= orbit;
-            if (keys[SDL_SCANCODE_E]) camYaw += orbit;
-        }
+        const bool w = keys[SDL_SCANCODE_W];
+        const bool s = keys[SDL_SCANCODE_S];
+        const bool a = keys[SDL_SCANCODE_A];
+        const bool d = keys[SDL_SCANCODE_D];
+        const float orbit = 1.5f * static_cast<float>(frameTime);
+        if (keys[SDL_SCANCODE_Q]) camYaw -= orbit;
+        if (keys[SDL_SCANCODE_E]) camYaw += orbit;
 
         // ---- Fixed-timestep physics ----
         ApplyTuning(world, cubeId, tuning);
@@ -159,8 +150,8 @@ int main(int /*argc*/, char** /*argv*/) {
             const glm::vec3 forward = body.GetOrientation() * glm::vec3(0.0f, 0.0f, -1.0f);
             if (w) body.ApplyForce(forward * tuning.thrust);
             if (s) body.ApplyForce(-forward * tuning.thrust);
-            if (a) body.ApplyTorque({0.0f, tuning.turnPower, 0.0f});
-            if (d) body.ApplyTorque({0.0f, -tuning.turnPower, 0.0f});
+            if (a) body.ApplyTorque({ 0.0f, tuning.turnPower, 0.0f });
+            if (d) body.ApplyTorque({ 0.0f, -tuning.turnPower, 0.0f });
 
             world.Step();
             accumulator -= rocketphys::World::kFixedDt;
@@ -188,28 +179,12 @@ int main(int /*argc*/, char** /*argv*/) {
 
         renderer.DrawGrid(viewProj);
         const glm::mat4 model = glm::translate(glm::mat4(1.0f), body.GetPosition()) *
-                                glm::mat4_cast(body.GetOrientation());
+            glm::mat4_cast(body.GetOrientation());
         renderer.DrawBody(viewProj, model);
-
-        // ---- UI ----
-        HudStats stats;
-        stats.height = body.GetPosition().y - body.GetHalfHeight();
-        stats.speed = glm::length(body.GetVelocity());
-        stats.angularSpeed = glm::length(body.GetAngularVelocity());
-        stats.simTime = world.GetTime();
-        stats.fps = fps;
-
-        ui.BeginFrame();
-        const UiActions actions = ui.DrawPanel(tuning, stats);
-        ui.EndFrame();
-
-        if (actions.resetBody) ResetBody(world, cubeId);
-        if (actions.resetParams) tuning = Tuning::Defaults();
 
         SDL_GL_SwapWindow(window);
     }
 
-    ui.Shutdown();
     renderer.Shutdown();
     SDL_GL_DeleteContext(glContext);
     SDL_DestroyWindow(window);

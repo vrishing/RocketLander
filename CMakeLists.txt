@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(BUILD_TESTS  "Build unit tests"          ON)
-option(BUILD_VIEWER "Build the SDL/OpenGL viewer" OFF)
+option(BUILD_VIEWER "Build the SDL/OpenGL viewer" ON)
 
 # The physics library never depends on SDL/OpenGL/ImGui.
 add_subdirectory(physics)

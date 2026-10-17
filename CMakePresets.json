@@ -6,9 +6,12 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-      "architecture": { "value": "x64", "strategy": "external" },
-      "cacheVariables": { "CMAKE_CXX_COMPILER": "cl.exe" }
+      "toolchainFile": "C:/vcpkg/vcpkg/scripts/buildsystems/vcpkg.cmake",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      }
+      //"cacheVariables": { "CMAKE_CXX_COMPILER": "cl.exe" }
     },
     {
       "name": "x64-debug",

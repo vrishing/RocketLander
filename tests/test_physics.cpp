@@ -239,3 +239,43 @@ TEST(Thrusters, DiagonalPairsGivePureTorque) {
         EXPECT_NEAR(b.GetAngularVelocity().z, expectedW.z, 1e-3f);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Hover test: a proportional-derivative height controller holds the rocket
+// at a target altitude. Controller lives in the test, not in the library.
+//
+//   throttle = hover + kp * (target - y) - kd * vy
+//
+// hover = weight / max thrust = 9810 / 25000 = 0.3924
+// kp = 0.002 -> stiffness 50 N/m
+// kd = 0.02  -> damping 500 N*s/m (overdamped, so it settles without oscillating)
+// ---------------------------------------------------------------------------
+TEST(Hover, MainEngineHoldsTargetAltitude) {
+    const float target = 1000.0f;
+    const float hover = 9810.0f / 25000.0f;
+    const float kp = 0.002f;
+    const float kd = 0.02f;
+
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, target + 2.0f, 0.0f });  // start 2 m above target
+    const std::size_t id = world.AddBody(rocket);
+
+    // 40 s of simulated time: 40 / (1/120) = 4800 steps.
+    for (int step = 0; step < 4800; ++step) {
+        RigidBody& body = world.GetBody(id);
+        const float error = target - body.GetPosition().y;
+        const float vy = body.GetVelocity().y;
+        body.SetThrottle(kMainEngine, hover + kp * error - kd * vy);
+        world.Step();
+    }
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_NEAR(body.GetPosition().y, target, 0.05f);     // within 5 cm
+    EXPECT_NEAR(body.GetVelocity().y, 0.0f, 0.01f);       // essentially at rest
+    EXPECT_NEAR(body.GetPosition().x, 0.0f, 1e-3f);       // no sideways drift
+    EXPECT_NEAR(body.GetPosition().z, 0.0f, 1e-3f);
+    EXPECT_NEAR(glm::length(body.GetAngularVelocity()), 0.0f, 1e-3f);  // no spin
+}
