@@ -1,5 +1,5 @@
 #include "rocketphys/World.h"
-
+#include "rocketphys/RigidBody.h"
 #include <cmath>
 
 namespace rocketphys {
@@ -16,6 +16,7 @@ std::size_t World::AddBody(const RigidBody& body) {
 
 void World::Step() {
     for (RigidBody& body : bodies_) {
+        body.ApplyThrusters();
         if (body.GetInvMass() > 0.0f) {
             body.ApplyForce(gravity_ * body.GetMass());  // F = m * g
         }
