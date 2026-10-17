@@ -108,6 +108,15 @@ bool Renderer::Init() {
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
 
+
+    // ---- Dynamic line buffer (contents change every frame) ----
+    glGenVertexArrays(1, &lineVao_);
+    glGenBuffers(1, &lineVbo_);
+    glBindVertexArray(lineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), nullptr);
+
     glBindVertexArray(0);
     return true;
 }
@@ -118,6 +127,8 @@ void Renderer::Shutdown() {
     glDeleteVertexArrays(1, &boxVao_);
     glDeleteBuffers(1, &boxVbo_);
     glDeleteBuffers(1, &boxEbo_);
+    glDeleteVertexArrays(1, &lineVao_);
+    glDeleteBuffers(1, &lineVbo_);
     glDeleteProgram(program_);
 }
 
@@ -141,4 +152,17 @@ void Renderer::DrawBody(const glm::mat4& viewProj, const glm::mat4& model) const
     glUniform3f(colorLoc_, 1.0f, 0.55f, 0.15f);
     glDrawElements(GL_LINES, 2, GL_UNSIGNED_INT,
                    reinterpret_cast<const void*>(24 * sizeof(unsigned int)));
+}
+void Renderer::DrawLines(const glm::mat4& viewProj, const std::vector<glm::vec3>& points,
+    const glm::vec3& color) const {
+    if (points.empty()) return;
+
+    glUseProgram(program_);
+    glUniformMatrix4fv(mvpLoc_, 1, GL_FALSE, glm::value_ptr(viewProj));
+    glUniform3f(colorLoc_, color.x, color.y, color.z);
+
+    glBindVertexArray(lineVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
+    glBufferData(GL_ARRAY_BUFFER, points.size() * sizeof(glm::vec3), points.data(), GL_DYNAMIC_DRAW);
+    glDrawArrays(GL_LINES, 0, static_cast<GLsizei>(points.size()));
 }

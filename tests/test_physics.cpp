@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-
+#include <cmath>
 #include <glm/glm.hpp>
 
 #include "rocketphys/RigidBody.h"
@@ -278,4 +278,125 @@ TEST(Hover, MainEngineHoldsTargetAltitude) {
     EXPECT_NEAR(body.GetPosition().x, 0.0f, 1e-3f);       // no sideways drift
     EXPECT_NEAR(body.GetPosition().z, 0.0f, 1e-3f);
     EXPECT_NEAR(glm::length(body.GetAngularVelocity()), 0.0f, 1e-3f);  // no spin
+}
+
+// ---------------------------------------------------------------------------
+// Attitude: a tilt is a disturbance, not an error the rocket corrects by itself.
+// The main engine sits on the body's axis, so it produces no torque. With only
+// hover throttle, a rocket tilted 10 degrees keeps exactly that tilt.
+// ---------------------------------------------------------------------------
+TEST(Attitude, TiltedRocketDoesNotSelfCorrect) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    rocket.SetOrientation(glm::angleAxis(glm::radians(10.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    const std::size_t id = world.AddBody(rocket);
+    world.GetBody(id).SetThrottle(kMainEngine, 9810.0f / 25000.0f);
+
+    RunSteps(world, 120);  // 1 s
+
+    // Angle between the body's up axis and world up. For a unit vector, angle = acos(y).
+    const glm::vec3 up = world.GetBody(id).GetOrientation() * glm::vec3(0.0f, 1.0f, 0.0f);
+    const float tiltDeg = glm::degrees(std::acos(glm::clamp(up.y, -1.0f, 1.0f)));
+    EXPECT_NEAR(tiltDeg, 10.0f, 0.01f);
+}
+
+
+// ---------------------------------------------------------------------------
+// Attitude controller tests.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // Angle between the rocket's up axis and world up, in degrees.
+    float UpTiltDegrees(const RigidBody& rocket) {
+        const glm::vec3 up = rocket.GetRotationMatrix() * glm::vec3(0.0f, 1.0f, 0.0f);
+        return glm::degrees(std::acos(glm::clamp(up.y, -1.0f, 1.0f)));
+    }
+
+    // Runs hover throttle plus the attitude controller for `steps` physics steps.
+    void RunHoverWithAttitude(World& world, std::size_t id, int steps) {
+        const float hover = 9810.0f / 25000.0f;
+        for (int i = 0; i < steps; ++i) {
+            RigidBody& body = world.GetBody(id);
+            body.SetThrottle(kMainEngine, hover);
+            UpdateRocketAttitude(body);
+            world.Step();
+        }
+    }
+
+}  // namespace
+
+// Sign test: a 10 degree tilt must get smaller, not bigger. If this fails, the
+// torque sign is flipped. Fix that before tuning anything.
+TEST(Attitude, ControllerReducesTilt) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    rocket.SetOrientation(glm::angleAxis(glm::radians(10.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    const std::size_t id = world.AddBody(rocket);
+
+    RunHoverWithAttitude(world, id, 360);  // 3 s
+
+    // Expected: the tilt is about 2 to 3 degrees, so 5 degrees is a safe upper bound.
+    EXPECT_LT(UpTiltDegrees(world.GetBody(id)), 5.0f);
+}
+
+// Settling test: after 10 s the tilt should be almost gone.
+TEST(Attitude, ControllerSettlesTiltNearUpright) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    rocket.SetOrientation(glm::angleAxis(glm::radians(10.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    const std::size_t id = world.AddBody(rocket);
+
+    RunHoverWithAttitude(world, id, 1200);  // 10 s
+
+    EXPECT_LT(UpTiltDegrees(world.GetBody(id)), 0.5f);
+}
+
+// ---------------------------------------------------------------------------
+// Contact at the lowest point.
+// ---------------------------------------------------------------------------
+
+// A tilted rocket must never sink below the floor, and must end up tipped over.
+TEST(Contact, TiltedRocketTipsOverOnFloor) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 5.0f, 0.0f });
+    rocket.SetOrientation(glm::angleAxis(glm::radians(20.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    const std::size_t id = world.AddBody(rocket);
+
+    for (int i = 0; i < 1200; ++i) {  // 10 s
+        world.Step();
+        EXPECT_GE(world.GetBody(id).GetLowestPoint().y, -1e-3f);
+    }
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_NEAR(body.GetLowestPoint().y, 0.0f, 0.05f);  // resting on the floor
+    EXPECT_GT(UpTiltDegrees(body), 30.0f);              // it tipped over
+}
+
+// An upright rocket must land and stay upright. This checks the contact code
+// doesn't invent torque when the rocket is symmetric.
+TEST(Contact, UprightRocketLandsAndStaysUpright) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 5.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    for (int i = 0; i < 1200; ++i) world.Step();  // 10 s
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_NEAR(body.GetLowestPoint().y, 0.0f, 0.01f);
+    EXPECT_LT(UpTiltDegrees(body), 0.1f);
 }

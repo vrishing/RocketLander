@@ -46,6 +46,8 @@ namespace rocketphys {
         float GetInvMass() const { return invMass_; }
         float GetHalfHeight() const { return halfHeight_; }
         glm::mat3 GetRotationMatrix() const { return glm::mat3_cast(orientation_); }
+        // Lowest world-space point of the cylinder (the contact point for the floor).
+        glm::vec3 GetLowestPoint() const;
 
         void SetPosition(const glm::vec3& p) { position_ = p; }
         void SetVelocity(const glm::vec3& v) { velocity_ = v; }
@@ -86,6 +88,7 @@ namespace rocketphys {
         float linearDamping_ = 1.0f;
         float angularDamping_ = 1.0f;
         float halfHeight_ = 0.5f;
+        float radius_ = 0.0f;  // cylinder radius, m. 0 means a vertical line segment.
 
         std::vector<Thruster> thrusters_;
     };

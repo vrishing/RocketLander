@@ -7,39 +7,79 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include "Renderer.h"
-#include "Tuning.h"
+#include "rocketphys/Rocket.h"
 #include "rocketphys/World.h"
 
 namespace {
 
-    constexpr float kBoxSize = 1.0f;  // the cube is 1 x 1 x 1 m
-    const glm::vec3 kStartPosition{ 0.0f, 5.0f, 0.0f };
+    // Rocket geometry. Must match MakeRocketBody() in Rocket.cpp.
+    constexpr float kRocketRadius = 0.5f;
+    constexpr float kRocketHeight = 8.0f;
 
-    // Push the tuning values into the physics world and body.
-    void ApplyTuning(rocketphys::World& world, std::size_t id, const Tuning& t) {
-        world.SetGravity({ 0.0f, -t.gravity, 0.0f });
-        world.SetRestitution(t.restitution);
+    // Hover controller. Same gains as the hover test.
+    constexpr float kHoverThrottle = 9810.0f / 25000.0f;  // weight / max thrust
+    constexpr float kHoverKp = 0.002f;
+    constexpr float kHoverKd = 0.02f;
+    constexpr float kTargetY = 20.0f;                     // body center target, m
+    const glm::vec3 kStartPosition{ 0.0f, 30.0f, 0.0f };
 
-        rocketphys::RigidBody& body = world.GetBody(id);
-        body.SetMass(t.mass);  // must come before inertia
-        body.SetBoxInertia(kBoxSize, kBoxSize, kBoxSize);
+    // Display only: meters of arrow per newton of thrust. Physics is unaffected.
+    constexpr float kThrustDisplayScale = 0.0002f;
+
+    void ResetRocket(rocketphys::World& world, std::size_t id) {
+        rocketphys::RigidBody& rocket = world.GetBody(id);
+        rocket.SetPosition(kStartPosition);
+        rocket.SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        rocket.ZeroMotion();
     }
 
-    void ResetBody(rocketphys::World& world, std::size_t id) {
-        rocketphys::RigidBody& body = world.GetBody(id);
-        body.SetPosition(kStartPosition);
-        body.SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-        body.ZeroMotion();
+    // Same start, but tilted about the X axis. The tilt is built from an axis-angle
+    // quaternion, not Euler angles.
+    void ResetRocketTilted(rocketphys::World& world, std::size_t id, float degrees) {
+        rocketphys::RigidBody& rocket = world.GetBody(id);
+        rocket.SetPosition(kStartPosition);
+        rocket.SetOrientation(glm::angleAxis(glm::radians(degrees), glm::vec3(1.0f, 0.0f, 0.0f)));
+        rocket.ZeroMotion();
     }
 
-    bool IsGrounded(const rocketphys::RigidBody& body) {
-        return body.GetPosition().y - body.GetHalfHeight() <= 0.02f;
+    // Returns the main-engine throttle for this physics step.
+    float HoverThrottle(const rocketphys::RigidBody& rocket) {
+        const float error = kTargetY - rocket.GetPosition().y;
+        const float vy = rocket.GetVelocity().y;
+        return kHoverThrottle + kHoverKp * error - kHoverKd * vy;
+    }
+
+    // Builds arrow line segments for every thruster that is firing.
+    // Arrows start at the thruster's world position and point in the push direction.
+    void BuildThrustLines(const rocketphys::RigidBody& rocket,
+        std::vector<glm::vec3>& mainLines,
+        std::vector<glm::vec3>& rcsLines) {
+        mainLines.clear();
+        rcsLines.clear();
+
+        const glm::mat3 R = rocket.GetRotationMatrix();
+        const std::vector<rocketphys::Thruster>& thrusters = rocket.GetThrusters();
+
+        for (std::size_t i = 0; i < thrusters.size(); ++i) {
+            const rocketphys::Thruster& t = thrusters[i];
+            if (t.throttle <= 0.0f) continue;
+
+            // Same world-space point and direction that ApplyThrusters() uses.
+            const glm::vec3 start = rocket.GetPosition() + R * t.localPosition;
+            const glm::vec3 dir = R * t.localDirection;
+            const float length = t.throttle * t.maxForce * kThrustDisplayScale;
+
+            std::vector<glm::vec3>& target = (i == rocketphys::kMainEngine) ? mainLines : rcsLines;
+            target.push_back(start);
+            target.push_back(start + dir * length);
+        }
     }
 
 }  // namespace
@@ -79,20 +119,21 @@ int main(int /*argc*/, char** /*argv*/) {
     if (!renderer.Init()) return 1;
 
     // ---------- Simulation ----------
-    Tuning tuning = Tuning::Defaults();
     rocketphys::World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+    const std::size_t rocketId = world.AddBody(rocketphys::MakeRocketBody());
+    ResetRocket(world, rocketId);
+    bool hoverOn = true;
+    bool showThrust = true;
 
-    rocketphys::RigidBody cube;
-    cube.SetDamping(0.995f, 0.97f);
-    cube.SetHalfHeight(kBoxSize * 0.5f);
-    const std::size_t cubeId = world.AddBody(cube);
-    ApplyTuning(world, cubeId, tuning);
-    ResetBody(world, cubeId);
+    // Reused every frame so we don't reallocate.
+    std::vector<glm::vec3> mainLines;
+    std::vector<glm::vec3> rcsLines;
 
-    // ---------- Camera (orbits the cube) ----------
+    // ---------- Camera (orbits the rocket) ----------
     float camYaw = 0.6f;
-    float camPitch = 0.45f;
-    float camDistance = 14.0f;
+    float camPitch = 0.2f;
+    float camDistance = 35.0f;
 
     // ---------- Main loop ----------
     double accumulator = 0.0;
@@ -109,21 +150,22 @@ int main(int /*argc*/, char** /*argv*/) {
             if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: running = false; break;
-                case SDLK_r: ResetBody(world, cubeId); break;
-                case SDLK_SPACE: {
-                    rocketphys::RigidBody& b = world.GetBody(cubeId);
-                    if (IsGrounded(b)) {
-                        glm::vec3 v = b.GetVelocity();
-                        v.y += tuning.jumpSpeed;
-                        b.SetVelocity(v);
-                    }
+                case SDLK_r: ResetRocket(world, rocketId); break;
+                case SDLK_t: ResetRocketTilted(world, rocketId, 10.0f); break;
+                case SDLK_h:
+                    hoverOn = !hoverOn;
+                    std::printf("Hover %s\n", hoverOn ? "ON" : "OFF");
                     break;
-                }
+                case SDLK_v:
+                    showThrust = !showThrust;
+                    std::printf("Thrust vectors %s\n", showThrust ? "ON" : "OFF");
+                    break;
                 default: break;
                 }
             }
             if (e.type == SDL_MOUSEWHEEL) {
-                camDistance = std::clamp(camDistance - static_cast<float>(e.wheel.y), 4.0f, 40.0f);
+                camDistance = std::clamp(camDistance - 2.0f * static_cast<float>(e.wheel.y),
+                    10.0f, 150.0f);
             }
         }
 
@@ -133,44 +175,43 @@ int main(int /*argc*/, char** /*argv*/) {
         previous = now;
         accumulator += std::min(frameTime, 0.25);  // clamp: avoids a spiral of death after a stall
 
-        // ---- Held keys (read once per frame, applied every physics step) ----
+        // ---- Camera orbit keys ----
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
-        const bool w = keys[SDL_SCANCODE_W];
-        const bool s = keys[SDL_SCANCODE_S];
-        const bool a = keys[SDL_SCANCODE_A];
-        const bool d = keys[SDL_SCANCODE_D];
         const float orbit = 1.5f * static_cast<float>(frameTime);
         if (keys[SDL_SCANCODE_Q]) camYaw -= orbit;
         if (keys[SDL_SCANCODE_E]) camYaw += orbit;
 
         // ---- Fixed-timestep physics ----
-        ApplyTuning(world, cubeId, tuning);
         while (accumulator >= rocketphys::World::kFixedDt) {
-            rocketphys::RigidBody& body = world.GetBody(cubeId);
-            const glm::vec3 forward = body.GetOrientation() * glm::vec3(0.0f, 0.0f, -1.0f);
-            if (w) body.ApplyForce(forward * tuning.thrust);
-            if (s) body.ApplyForce(-forward * tuning.thrust);
-            if (a) body.ApplyTorque({ 0.0f, tuning.turnPower, 0.0f });
-            if (d) body.ApplyTorque({ 0.0f, -tuning.turnPower, 0.0f });
+            rocketphys::RigidBody& rocket = world.GetBody(rocketId);
+            const float throttle = hoverOn ? HoverThrottle(rocket) : 0.0f;
+            rocket.SetThrottle(rocketphys::kMainEngine, throttle);
 
             world.Step();
             accumulator -= rocketphys::World::kFixedDt;
+
+            // Print once per simulated second so you can check the numbers.
+            if (world.GetStepCount() % 120 == 0) {
+                const rocketphys::RigidBody& r = world.GetBody(rocketId);
+                std::printf("t=%6.2f  y=%8.3f  vy=%8.3f  throttle=%.3f\n",
+                    world.GetTime(), r.GetPosition().y, r.GetVelocity().y, throttle);
+            }
         }
 
         // ---- Camera matrices ----
-        const rocketphys::RigidBody& body = world.GetBody(cubeId);
+        const rocketphys::RigidBody& rocket = world.GetBody(rocketId);
         int drawW = 1, drawH = 1;
         SDL_GL_GetDrawableSize(window, &drawW, &drawH);
         glViewport(0, 0, drawW, drawH);
         const float aspect = static_cast<float>(drawW) / static_cast<float>(std::max(drawH, 1));
 
-        const glm::vec3 target = body.GetPosition();
+        const glm::vec3 target = rocket.GetPosition();
         const glm::vec3 eye = target + camDistance * glm::vec3(
             std::sin(camYaw) * std::cos(camPitch),
             std::sin(camPitch),
             std::cos(camYaw) * std::cos(camPitch));
         const glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
-        const glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 200.0f);
+        const glm::mat4 proj = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 500.0f);
         const glm::mat4 viewProj = proj * view;
 
         // ---- Draw ----
@@ -178,9 +219,20 @@ int main(int /*argc*/, char** /*argv*/) {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         renderer.DrawGrid(viewProj);
-        const glm::mat4 model = glm::translate(glm::mat4(1.0f), body.GetPosition()) *
-            glm::mat4_cast(body.GetOrientation());
+
+        // The renderer draws a 1 x 1 x 1 box. Scale it to the rocket's size.
+        const glm::mat4 model =
+            glm::translate(glm::mat4(1.0f), rocket.GetPosition()) *
+            glm::mat4_cast(rocket.GetOrientation()) *
+            glm::scale(glm::mat4(1.0f), glm::vec3(2.0f * kRocketRadius, kRocketHeight, 2.0f * kRocketRadius));
         renderer.DrawBody(viewProj, model);
+
+        // Thrust vectors: orange for the main engine, light blue for RCS.
+        if (showThrust) {
+            BuildThrustLines(rocket, mainLines, rcsLines);
+            renderer.DrawLines(viewProj, mainLines, glm::vec3(1.0f, 0.6f, 0.1f));
+            renderer.DrawLines(viewProj, rcsLines, glm::vec3(0.3f, 0.8f, 1.0f));
+        }
 
         SDL_GL_SwapWindow(window);
     }

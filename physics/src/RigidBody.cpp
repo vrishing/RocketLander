@@ -25,13 +25,16 @@ namespace rocketphys {
     }
 
     void RigidBody::SetCylinderInertia(float radius, float height) {
+        radius_ = radius;
+        halfHeight_ = height * 0.5f;
+
         invInertiaBody_ = glm::mat3(0.0f);
         if (invMass_ == 0.0f) return;
 
         const float m = mass_;
-        const float iyy = 0.5f * m * radius * radius;                       // long axis (Y)
+        const float iyy = 0.5f * m * radius * radius;                                  // long axis (Y)
         const float ixx = (1.0f / 12.0f) * m * (3.0f * radius * radius + height * height);
-        const float izz = ixx;                                              // sideways axes
+        const float izz = ixx;                                                         // sideways axes
 
         invInertiaBody_[0][0] = 1.0f / ixx;
         invInertiaBody_[1][1] = 1.0f / iyy;
@@ -109,6 +112,25 @@ namespace rocketphys {
 
         force_ = glm::vec3(0.0f);
         torque_ = glm::vec3(0.0f);
+    }
+
+    glm::vec3 RigidBody::GetLowestPoint() const {
+        // World direction of the cylinder's long axis.
+        const glm::vec3 axis = GetRotationMatrix() * glm::vec3(0.0f, 1.0f, 0.0f);
+        const float a = axis.y;  // 1 = standing upright, 0 = lying flat
+
+        // Direction along the bottom disk that points most steeply down.
+        // Up with its along-axis part removed, flipped to point down. Length is sqrt(1 - a^2).
+        const glm::vec3 up(0.0f, 1.0f, 0.0f);
+        const glm::vec3 perp = up - a * axis;
+        const float perpLength = glm::length(perp);
+        glm::vec3 rimDown(0.0f);
+        if (perpLength > 1e-6f) rimDown = -perp / perpLength;  // exactly zero when upright
+
+        // The end of the axis that is lower in the world.
+        const float endSign = (a > 0.0f) ? -1.0f : 1.0f;
+
+        return position_ + endSign * halfHeight_ * axis + radius_ * rimDown;
     }
 
 }  // namespace rocketphys

@@ -27,20 +27,40 @@ void World::Step() {
 }
 
 void World::ResolveGroundContact(RigidBody& body) const {
-    // Ground plane is y = 0. The body's lowest point is position.y - halfHeight.
-    glm::vec3 pos = body.GetPosition();
-    if (pos.y - body.GetHalfHeight() > 0.0f) return;
+    if (body.GetInvMass() == 0.0f) return;  // static bodies don't respond
 
-    pos.y = body.GetHalfHeight();  // snap back on top of the floor
-    body.SetPosition(pos);
+    const glm::vec3 center = body.GetPosition();
+    const glm::vec3 contact = body.GetLowestPoint();
+    if (contact.y >= 0.0f) return;  // lowest point is above the floor
 
-    glm::vec3 vel = body.GetVelocity();
-    if (vel.y < 0.0f) {
-        vel.y = std::fabs(vel.y) * restitution_;  // bounce
-        if (vel.y < kRestSpeed) vel.y = 0.0f;
-        body.SetVelocity(vel);
-    }
-    // TODO (hour 1.5 -> landing): report Landed/Crashed using touchdown speed and tilt.
+    // Lever arm from the center of mass to the contact point.
+    const glm::vec3 r = contact - center;
+
+    // 1. Lift the body so the contact point sits exactly on the floor.
+    body.SetPosition(center + glm::vec3(0.0f, -contact.y, 0.0f));
+
+    // 2. Velocity of the contact point = linear velocity + omega x r.
+    const glm::vec3 n(0.0f, 1.0f, 0.0f);  // floor normal
+    const glm::vec3 pointVel = body.GetVelocity() + glm::cross(body.GetAngularVelocity(), r);
+    const float approachSpeed = -pointVel.y;  // positive when moving into the floor
+    if (approachSpeed <= 0.0f) return;        // already moving away
+
+    // 3. Restitution. Tiny impacts stop dead instead of micro-bouncing.
+    const float e = (approachSpeed < kRestSpeed) ? 0.0f : restitution_;
+
+    // 4. Effective inverse mass for an impulse at r along n. The rotational term
+    //    means an off-center hit spins the body as well as slowing it.
+    const glm::mat3 R = body.GetRotationMatrix();
+    const glm::mat3 invInertiaWorld = R * body.GetInvInertiaBody() * glm::transpose(R);
+    const glm::vec3 rxn = glm::cross(r, n);
+    const float denom = body.GetInvMass() + glm::dot(n, glm::cross(invInertiaWorld * rxn, r));
+    if (denom <= 0.0f) return;
+
+    // 5. Impulse magnitude, applied to linear and angular velocity.
+    const float j = (1.0f + e) * approachSpeed / denom;
+    const glm::vec3 impulse = j * n;
+    body.SetVelocity(body.GetVelocity() + impulse * body.GetInvMass());
+    body.SetAngularVelocity(body.GetAngularVelocity() + invInertiaWorld * glm::cross(r, impulse));
 }
 
 }  // namespace rocketphys
