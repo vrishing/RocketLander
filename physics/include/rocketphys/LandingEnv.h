@@ -41,6 +41,9 @@ namespace rocketphys {
         float tiltCost = 0.05f;             // per policy step, times tilt / 90 deg
         float spinCost = 0.02f;             // per policy step, times |omega| in rad/s
         float altitudeShaping = 0.05f;      // potential: reward per metre of height lost
+        float speedEnvelopeCost = 0.01f;    // per policy step, per m/s of descent above the safe envelope
+        float brakingDecel = 0.5f;          // m/s^2, sets the envelope v = sqrt(2 a h) = sqrt(h)
+        float minSafeSpeed = 1.5f;          // m/s, the envelope never drops below this (under the 2 m/s limit)
         float landedBonus = 100.0f;         // terminal, on Landed
         float crashPenalty = -100.0f;       // terminal, on Crashed
         float timeoutPenalty = -50.0f;      // terminal, when time runs out while still flying

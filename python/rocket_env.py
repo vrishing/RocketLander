@@ -72,9 +72,11 @@ class RocketLandingEnv(gym.Env):
         result = self._env.step([float(x) for x in a])
 
         info = {
-            "status": result.status.name,       # "Flying", "Landed" or "Crashed"
-            "height": self._env.height,         # altitude of the lowest point, m
-            "tilt_deg": self._env.tilt_deg,     # angle from upright, degrees
+            "status": result.status.name,            # "Flying", "Landed" or "Crashed"
+            "height": self._env.height,              # altitude of the lowest point, m
+            "tilt_deg": self._env.tilt_deg,          # angle from upright, degrees
+            "touchdown_speed": self._env.touchdown_speed,       # m/s, set at first contact
+            "touchdown_tilt_deg": self._env.touchdown_tilt_deg, # deg, set at first contact
         }
         return (
             self._to_array(result.observation),

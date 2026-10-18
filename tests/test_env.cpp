@@ -359,3 +359,18 @@ TEST(Reward, TimeoutPenaltyApplied) {
     EXPECT_TRUE(r.truncated);
     EXPECT_LT(r.reward, -40.0f);
 }
+
+// At the same altitude, a fast fall must earn less reward for the step than a slow one.
+// The altitude shaping pays a little for the extra height lost, but the envelope penalty
+// for 20 m/s at 30 m is far larger.
+TEST(Reward, FastDescentEarnsLessThanSlowAtSameHeight) {
+    LandingEnv slow, fast;
+    const glm::quat upright(1.0f, 0.0f, 0.0f, 0.0f);
+    slow.ResetFromState({ 0.0f, 30.0f, 0.0f }, upright, glm::vec3(0.0f), glm::vec3(0.0f));
+    fast.ResetFromState({ 0.0f, 30.0f, 0.0f }, upright, { 0.0f, -20.0f, 0.0f }, glm::vec3(0.0f));
+
+    const float rSlow = slow.Step(kCoast).reward;
+    const float rFast = fast.Step(kCoast).reward;
+
+    EXPECT_LT(rFast, rSlow);
+}

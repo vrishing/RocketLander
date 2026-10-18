@@ -83,8 +83,7 @@ def main():
     # VecNormalize keeps running averages of observations and rewards, so the network sees
     # numbers near zero with unit spread. Its statistics must be saved with the model.
     # clip_reward is large because the terminal rewards (+100 and -100) are the main signal.
-       venv = VecNormalize(venv, norm_obs=True, norm_reward=True,
-                    clip_obs=10.0, clip_reward=100.0, gamma=0.999)
+    venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=100.0, gamma=0.999)
 
     model = PPO(
         "MlpPolicy",

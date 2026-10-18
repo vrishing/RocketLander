@@ -14,7 +14,10 @@ namespace rocketphys {
         constexpr float kObsLimit = 10.0f;      // observation clamp
 
         float Clamp(float x, float lo, float hi) { return std::clamp(x, lo, hi); }
-
+        // Fastest descent that is still safe at this altitude: v = sqrt(2 a h), never below the minimum.
+        float SafeDescentSpeed(float altitude, const RewardWeights& w) {
+            return std::max(w.minSafeSpeed, std::sqrt(2.0f * w.brakingDecel * std::max(altitude, 0.0f)));
+        }
     }  // namespace
 
     LandingEnv::LandingEnv(const EnvConfig& config) : config_(config) {
@@ -182,8 +185,17 @@ namespace rocketphys {
 
         const float tilt = r.GetTiltDegrees();
         const float spin = glm::length(r.GetAngularVelocity());
-        return -w.stepCost - w.tiltCost * (tilt / 90.0f) - w.spinCost * spin;
+        const float altitude = r.GetLowestPoint().y;
+        const float fallSpeed = std::max(0.0f, -r.GetVelocity().y);
+
+        // Penalty only for the part of the fall speed above the envelope. The cap of 30 m/s
+        // stops a single violent step from swamping the other terms.
+        const float excess = std::max(0.0f, fallSpeed - SafeDescentSpeed(altitude, w));
+        const float envelope = w.speedEnvelopeCost * std::min(excess, 30.0f);
+
+        return -w.stepCost - w.tiltCost * (tilt / 90.0f) - w.spinCost * spin - envelope;
     }
+
     float LandingEnv::Potential() const {
         // Terminal states have potential zero. This keeps the telescoping sum exact.
         if (Rocket().GetLandingStatus() != LandingStatus::Flying) return 0.0f;

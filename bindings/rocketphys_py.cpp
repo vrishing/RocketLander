@@ -31,6 +31,9 @@ PYBIND11_MODULE(rocketphys_py, m) {
         .def_readwrite("spin_cost", &RewardWeights::spinCost)
         .def_readwrite("discount", &RewardWeights::discount)
         .def_readwrite("altitude_shaping", &RewardWeights::altitudeShaping)
+        .def_readwrite("speed_envelope_cost", &RewardWeights::speedEnvelopeCost)
+        .def_readwrite("braking_decel", &RewardWeights::brakingDecel)
+        .def_readwrite("min_safe_speed", &RewardWeights::minSafeSpeed)
         .def_readwrite("timeout_penalty", &RewardWeights::timeoutPenalty)
         .def_readwrite("landed_bonus", &RewardWeights::landedBonus)
         .def_readwrite("crash_penalty", &RewardWeights::crashPenalty)
@@ -75,6 +78,12 @@ PYBIND11_MODULE(rocketphys_py, m) {
             })
         .def_property_readonly("tilt_deg", [](const LandingEnv& e) {
         return e.Rocket().GetTiltDegrees();
+            })
+        .def_property_readonly("touchdown_speed", [](const LandingEnv& e) {
+        return e.Rocket().GetTouchdownSpeed();
+            })
+        .def_property_readonly("touchdown_tilt_deg", [](const LandingEnv& e) {
+        return e.Rocket().GetTouchdownTiltDeg();
             });
 
     // What step() returns.
