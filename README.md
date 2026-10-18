@@ -259,7 +259,3 @@ Likely next steps are a curriculum that starts at low altitude, so the policy me
 - Each training run saves the model and its VecNormalize statistics together. Evaluation must use both.
 - Pinned Python packages are in `requirements.txt`.
 - Results are tagged in git. Each run folder records the configuration it used.
-
-## License
-
-MIT (replace with your choice).
