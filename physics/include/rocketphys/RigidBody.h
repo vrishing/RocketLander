@@ -89,6 +89,14 @@ namespace rocketphys {
         void ApplyThrusters();
 
         const std::vector<Thruster>& GetThrusters() const { return thrusters_; }
+        // Radius of the cylinder, m. Zero for a box, which has no drag area here.
+        float GetRadius() const { return radius_; }
+
+        // Air drag on the body's center of mass, in newtons. Uses the reference area
+        // for the current direction of motion: the end disk when moving along the
+        // long axis, the side wall when moving across it.
+        glm::vec3 DragForce(float airDensity, float dragCoefficient) const;
+
 
     private:
         // Linear state

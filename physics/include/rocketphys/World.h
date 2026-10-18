@@ -1,5 +1,5 @@
 #pragma once
-// World: owns bodies, applies gravity, steps time in FIXED increments, handles the ground.
+// World: owns bodies, applies gravity, drag, and the ground. Steps time in FIXED increments.
 
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +29,18 @@ namespace rocketphys {
         void SetFriction(float mu) { friction_ = (mu < 0.0f) ? 0.0f : mu; }
         float GetFriction() const { return friction_; }
 
+        // Air resistance. Off by default (vacuum). seaLevelDensity is in kg/m^3.
+        void SetAtmosphere(bool enabled, float seaLevelDensity = 1.225f);
+        bool HasAtmosphere() const { return atmosphere_; }
+
+        // Drag coefficient for the body. 0.8 is a reasonable blunt-cylinder value.
+        void SetDragCoefficient(float cd) { dragCoefficient_ = (cd < 0.0f) ? 0.0f : cd; }
+        float GetDragCoefficient() const { return dragCoefficient_; }
+
+        // Air density at a height in meters: rho(h) = rho0 * exp(-h / 8500).
+        // Heights below zero use sea-level density.
+        float AirDensityAt(float height) const;
+
         // Advance the whole world by exactly kFixedDt.
         void Step();
 
@@ -42,6 +54,11 @@ namespace rocketphys {
         glm::vec3 gravity_{ 0.0f, -9.81f, 0.0f };
         float restitution_ = 0.3f;
         float friction_ = 0.6f;
+
+        bool atmosphere_ = false;
+        float seaLevelDensity_ = 1.225f;
+        float dragCoefficient_ = 0.8f;
+
         std::uint64_t stepCount_ = 0;
     };
 

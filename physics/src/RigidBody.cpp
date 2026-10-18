@@ -1,6 +1,7 @@
 #include "rocketphys/RigidBody.h"
 
 #include <cmath>
+#include <algorithm>
 
 namespace rocketphys {
 
@@ -150,6 +151,30 @@ namespace rocketphys {
 
         force_ = glm::vec3(0.0f);
         torque_ = glm::vec3(0.0f);
+    }
+    namespace {
+        constexpr float kPi = 3.14159265f;
+    }  // namespace
+
+    glm::vec3 RigidBody::DragForce(float airDensity, float dragCoefficient) const {
+        const float speed = glm::length(velocity_);
+        if (speed < 1e-6f || airDensity <= 0.0f || dragCoefficient <= 0.0f) {
+            return glm::vec3(0.0f);
+        }
+
+        // Angle between the velocity and the body's long axis. cos = 1 means falling
+        // along the axis; cos = 0 means moving sideways. Use |cos| because drag does
+        // not care which end of the rocket leads.
+        const glm::vec3 up = GetRotationMatrix() * glm::vec3(0.0f, 1.0f, 0.0f);
+        const float cosT = std::fabs(glm::dot(velocity_, up)) / speed;
+        const float sinT = std::sqrt(std::max(0.0f, 1.0f - cosT * cosT));
+
+        // Reference area blends between the end disk (pi r^2) and the side wall (2 r h).
+        const float height = 2.0f * halfHeight_;
+        const float area = kPi * radius_ * radius_ * cosT + 2.0f * radius_ * height * sinT;
+
+        // F = -1/2 * rho * Cd * A * |v| * v. The minus sign makes it oppose the motion.
+        return -0.5f * airDensity * dragCoefficient * area * speed * velocity_;
     }
 
 }  // namespace rocketphys

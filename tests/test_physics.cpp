@@ -545,3 +545,81 @@ TEST(Friction, StrongerFrictionSlowsFootMore) {
     const float weak = FootSlideAfter(0.1f, 0.3f);
     EXPECT_LT(strong, weak);
 }
+
+// ---------------------------------------------------------------------------
+// Atmosphere and air drag.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // Terminal speed for the rocket falling along its axis, from the balance
+    // m * g = 1/2 * rho * Cd * (pi r^2) * v^2.
+    float TerminalSpeedAt(const World& world, float height, float mass, float radius) {
+        const float rho = world.AirDensityAt(height);
+        const float area = 3.14159265f * radius * radius;
+        return std::sqrt(2.0f * mass * 9.81f / (rho * world.GetDragCoefficient() * area));
+    }
+
+}  // namespace
+
+// Vacuum is the default. A 1 s fall must match v = g * t exactly, as before.
+TEST(Atmosphere, OffByDefaultFallsInVacuum) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+    EXPECT_FALSE(world.HasAtmosphere());
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 120);  // 1 s
+
+    EXPECT_NEAR(world.GetBody(id).GetVelocity().y, -9.81f, 0.01f);
+}
+
+// Density at sea level is 1.225 kg/m^3, and falls to 1/e of that one scale height up.
+TEST(Atmosphere, DensityFallsWithAltitude) {
+    World world;
+    world.SetAtmosphere(true);
+    EXPECT_NEAR(world.AirDensityAt(0.0f), 1.225f, 1e-4f);
+    EXPECT_NEAR(world.AirDensityAt(8500.0f), 1.225f / std::exp(1.0f), 1e-3f);
+}
+
+// Sideways motion is slowed by drag. Expected: 0.5 * 1.089 * 0.8 * 8 m^2 * v^2 / 1000 kg
+// at 1000 m, which is about 0.087 m/s^2 at 5 m/s, so the speed drops to about 4.91 m/s in 1 s.
+TEST(Atmosphere, DragSlowsSidewaysMotion) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+    world.SetAtmosphere(true);
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    rocket.SetVelocity({ 5.0f, 0.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 120);  // 1 s
+
+    const glm::vec3 v = world.GetBody(id).GetVelocity();
+    EXPECT_GT(v.x, 0.0f);                      // still moving the same way
+    EXPECT_NEAR(v.x, 4.91f, 0.05f);            // slowed by drag
+}
+
+// Terminal speed is an equilibrium: a rocket already falling at it must not
+// accelerate. The tolerance is 2% because the air thins by about 2% over the
+// 170 m the rocket falls in that second.
+TEST(Atmosphere, TerminalSpeedIsEquilibrium) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+    world.SetAtmosphere(true);
+
+    const float height = 1000.0f;
+    const float vt = TerminalSpeedAt(world, height, 1000.0f, 0.5f);  // about 169 m/s
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, height, 0.0f });
+    rocket.SetVelocity({ 0.0f, -vt, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 120);  // 1 s
+
+    EXPECT_NEAR(world.GetBody(id).GetVelocity().y, -vt, 0.02f * vt);
+}

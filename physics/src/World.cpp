@@ -10,8 +10,10 @@ namespace rocketphys {
         // Below this upward speed after a bounce we just stop the body (prevents endless micro-bouncing).
         constexpr float kRestSpeed = 0.15f;
 
+        // Scale height of the exponential atmosphere, m.
+        constexpr float kScaleHeight = 8500.0f;
+
         // Applies an impulse acting at lever arm r from the center of mass.
-        // Changes linear velocity by impulse / m, and angular velocity by I^-1 * (r x impulse).
         void ApplyImpulseAt(RigidBody& body, const glm::vec3& impulse, const glm::vec3& r,
             const glm::mat3& invInertiaWorld) {
             body.SetVelocity(body.GetVelocity() + impulse * body.GetInvMass());
@@ -25,14 +27,28 @@ namespace rocketphys {
         return bodies_.size() - 1;
     }
 
+    void World::SetAtmosphere(bool enabled, float seaLevelDensity) {
+        atmosphere_ = enabled;
+        seaLevelDensity_ = (seaLevelDensity < 0.0f) ? 0.0f : seaLevelDensity;
+    }
+
+    float World::AirDensityAt(float height) const {
+        const float h = (height < 0.0f) ? 0.0f : height;
+        return seaLevelDensity_ * std::exp(-h / kScaleHeight);
+    }
+
     void World::Step() {
         for (RigidBody& body : bodies_) {
             body.ApplyThrusters();                           // 1. thrust (throttle -> force)
             if (body.GetInvMass() > 0.0f) {
                 body.ApplyForce(gravity_ * body.GetMass());  // 2. gravity, F = m * g
+                if (atmosphere_) {                           // 3. drag, if the air is on
+                    const float rho = AirDensityAt(body.GetPosition().y);
+                    body.ApplyForce(body.DragForce(rho, dragCoefficient_));
+                }
             }
-            body.Integrate(kFixedDt);                        // 3. move and rotate
-            ResolveGroundContact(body);                      // 4. ground
+            body.Integrate(kFixedDt);                        // 4. move and rotate
+            ResolveGroundContact(body);                      // 5. ground
         }
         ++stepCount_;
     }
@@ -72,9 +88,7 @@ namespace rocketphys {
         const float jn = (1.0f + e) * approachSpeed / denomN;  // normal impulse magnitude, N*s
         ApplyImpulseAt(body, jn * n, r, invInertiaWorld);
 
-        // 5. Friction. After the normal impulse, the contact point's sideways (floor-plane)
-        //    sliding speed is reduced toward zero, but the friction impulse is capped at
-        //    mu * jn (Coulomb friction). Gripping works, and sliding cannot add energy.
+        // 5. Friction. Reduce the contact point's floor-plane sliding, capped at mu * jn.
         pointVel = body.GetVelocity() + glm::cross(body.GetAngularVelocity(), r);
         const glm::vec3 slide(pointVel.x, 0.0f, pointVel.z);
         const float slideSpeed = glm::length(slide);
@@ -85,8 +99,6 @@ namespace rocketphys {
         const float denomT = body.GetInvMass() + glm::dot(T, glm::cross(invInertiaWorld * rxT, r));
         if (denomT <= 0.0f) return;
 
-        // Impulse along T that would bring the sliding speed to zero. It is negative
-        // because it opposes the slide, and it is capped by the friction limit.
         const float maxFriction = friction_ * jn;
         const float lambda = std::clamp(-slideSpeed / denomT, -maxFriction, maxFriction);
         ApplyImpulseAt(body, lambda * T, r, invInertiaWorld);
