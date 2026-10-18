@@ -3,7 +3,7 @@ find_package(glm CONFIG REQUIRED)
 add_library(rocketphys STATIC
     src/RigidBody.cpp
     src/World.cpp
- "include/rocketphys/Thruster.h" "include/rocketphys/Rocket.h" "src/Rocket.cpp" "include/rocketphys/Landing.h")
+ "include/rocketphys/Thruster.h" "include/rocketphys/Rocket.h" "src/Rocket.cpp" "include/rocketphys/Landing.h" "include/rocketphys/Leg.h")
 
 # PUBLIC: anything linking rocketphys can #include <rocketphys/...>
 target_include_directories(rocketphys PUBLIC include)

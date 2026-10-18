@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <cmath>
 #include <glm/glm.hpp>
+#include <algorithm>
+#include <cstdint>
 
 #include "rocketphys/RigidBody.h"
 #include "rocketphys/World.h"
@@ -622,4 +624,296 @@ TEST(Atmosphere, TerminalSpeedIsEquilibrium) {
     RunSteps(world, 120);  // 1 s
 
     EXPECT_NEAR(world.GetBody(id).GetVelocity().y, -vt, 0.02f * vt);
+}
+
+// ---------------------------------------------------------------------------
+// Legs.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // Lowest point of anything that can touch the floor: the base rim or a deployed foot.
+    float LowestWorldY(const RigidBody& body) {
+        float y = body.GetLowestPoint().y;
+        for (std::size_t i = 0; i < body.GetLegs().size(); ++i) {
+            if (body.GetLegs()[i].deployed) y = std::min(y, body.GetLegFootWorld(i).y);
+        }
+        return y;
+    }
+
+}  // namespace
+
+// Descending below 15 m (base altitude) faster than 1 m/s deploys the legs.
+TEST(Legs, DeployWhenDescendingLow) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });  // keeps the velocity exactly as set
+
+    RigidBody rocket = MakeRocketWithLegs();
+    rocket.SetPosition({ 0.0f, 18.0f, 0.0f });  // base at 14 m
+    rocket.SetVelocity({ 0.0f, -5.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    world.Step();
+    EXPECT_TRUE(world.GetBody(id).HasDeployedLegs());
+}
+
+// Rising through the same altitude must not deploy the legs.
+TEST(Legs, DoNotDeployWhenAscending) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+
+    RigidBody rocket = MakeRocketWithLegs();
+    rocket.SetPosition({ 0.0f, 18.0f, 0.0f });  // base at 14 m, below the altitude limit
+    rocket.SetVelocity({ 0.0f, 5.0f, 0.0f });   // but climbing
+    const std::size_t id = world.AddBody(rocket);
+
+    world.Step();
+    EXPECT_FALSE(world.GetBody(id).HasDeployedLegs());
+}
+
+// Falling fast but high up must not deploy the legs.
+TEST(Legs, DoNotDeployAboveAltitude) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+
+    RigidBody rocket = MakeRocketWithLegs();
+    rocket.SetPosition({ 0.0f, 50.0f, 0.0f });  // base at 46 m
+    rocket.SetVelocity({ 0.0f, -5.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    world.Step();
+    EXPECT_FALSE(world.GetBody(id).HasDeployedLegs());
+}
+
+// Once deployed, the legs stay out even if the body bounces back up past the limit.
+TEST(Legs, DeploymentLatchesAfterBounce) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+
+    RigidBody rocket = MakeRocketWithLegs();
+    rocket.SetPosition({ 0.0f, 18.0f, 0.0f });
+    rocket.SetVelocity({ 0.0f, -5.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    world.Step();
+    ASSERT_TRUE(world.GetBody(id).HasDeployedLegs());
+
+    world.GetBody(id).SetVelocity({ 0.0f, 10.0f, 0.0f });  // now climbing fast
+    RunSteps(world, 240);                                // 2 s, climbing well above 15 m
+
+    EXPECT_TRUE(world.GetBody(id).HasDeployedLegs());
+}
+
+// Legs out and dropped 5 cm onto the feet. The feet must hold the base about
+// 0.5 m above the floor, and the lowest foot must sit on the floor.
+TEST(Legs, LegsHoldBaseOffTheFloor) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketWithLegs();
+    rocket.SetPosition({ 0.0f, 4.30f, 0.0f });  // feet start about 5 cm above the floor
+    rocket.SetVelocity({ 0.0f, -2.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 360);  // 3 s, long enough for the bounces to die out
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_TRUE(body.HasDeployedLegs());
+    EXPECT_NEAR(LowestWorldY(body), 0.0f, 0.02f);         // feet on the floor
+    // Feet hold the base at L * cos(100 deg) = 0.2456 m above the floor.
+    EXPECT_NEAR(body.GetLowestPoint().y, 0.2456f, 0.05f);
+}
+
+// A tilted rocket with legs out must never sink below the floor, at any step.
+TEST(Legs, TiltedRocketWithLegsNeverSinksIntoFloor) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketWithLegs();
+    rocket.SetPosition({ 0.0f, 5.0f, 0.0f });
+    rocket.SetOrientation(glm::angleAxis(glm::radians(20.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    const std::size_t id = world.AddBody(rocket);
+
+    for (int i = 0; i < 1200; ++i) {  // 10 s
+        world.Step();
+        EXPECT_GE(LowestWorldY(world.GetBody(id)), -1e-3f);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Wind.
+// ---------------------------------------------------------------------------
+
+// A still rocket in a 10 m/s wind feels it as drag. The relative speed is 10 m/s
+// and the sideways area is 2 r h = 8 m^2, so F = 0.5 * 1.225 * 0.8 * 8 * 100 = 392 N, pushing downwind.
+TEST(Wind, StillRocketFeelsWindAsDrag) {
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+
+    const glm::vec3 f = rocket.DragForce(1.225f, 0.8f, { 10.0f, 0.0f, 0.0f });
+    EXPECT_NEAR(f.x, 392.0f, 0.5f);
+    EXPECT_NEAR(f.y, 0.0f, 1e-3f);
+    EXPECT_NEAR(f.z, 0.0f, 1e-3f);
+}
+
+// A rocket moving at exactly the wind speed is not moving through the air, so no drag.
+TEST(Wind, RocketMovingWithWindFeelsNoDrag) {
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetVelocity({ 5.0f, 0.0f, 0.0f });
+
+    const glm::vec3 f = rocket.DragForce(1.225f, 0.8f, { 5.0f, 0.0f, 0.0f });
+    EXPECT_NEAR(glm::length(f), 0.0f, 1e-4f);
+}
+
+// Wind has no effect in vacuum. The atmosphere is off by default.
+TEST(Wind, NoEffectInVacuum) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+    world.SetBaseWind({ 10.0f, 0.0f, 0.0f });  // atmosphere stays off
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 120);  // 1 s
+
+    EXPECT_NEAR(world.GetBody(id).GetVelocity().x, 0.0f, 1e-4f);
+}
+
+// With air on, a still rocket is pushed downwind, and it never overtakes the wind.
+TEST(Wind, SteadyWindPushesRocketDownwind) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+    world.SetAtmosphere(true);
+    world.SetBaseWind({ 8.0f, 0.0f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 240);  // 2 s
+
+    const float vx = world.GetBody(id).GetVelocity().x;
+    EXPECT_GT(vx, 0.0f);
+    EXPECT_LT(vx, 8.0f);
+}
+
+// No wind is set by default.
+TEST(Wind, NoWindByDefault) {
+    World world;
+    EXPECT_EQ(world.GetWindVelocity(), glm::vec3(0.0f));
+}
+
+// The same seed must give the same gust sequence, bit for bit. Training depends on this.
+TEST(Wind, GustSequenceIsReproducible) {
+    auto windAfterTenSeconds = [](std::uint32_t seed) {
+        World world;
+        world.SetGusts(true, 8.0f, 2.0f, seed);
+        RunSteps(world, 1200);  // 10 s
+        return world.GetWindVelocity();
+        };
+
+    EXPECT_EQ(windAfterTenSeconds(42), windAfterTenSeconds(42));
+    EXPECT_NE(windAfterTenSeconds(42), windAfterTenSeconds(7));
+}
+
+// Gusts never exceed the maximum speed. Each step is a blend of two vectors
+// inside that limit, so the result stays inside it too.
+TEST(Wind, GustsStayWithinMaximum) {
+    World world;
+    world.SetGusts(true, 8.0f, 2.0f, 1);
+
+    for (int i = 0; i < 3600; ++i) {  // 30 s
+        world.Step();
+        EXPECT_LE(glm::length(world.GetWindVelocity()), 8.0f + 1e-4f);
+    }
+}
+
+// The wind must never jump between steps, including when a new gust starts.
+// The largest possible change is about 0.13 m/s per step for an 8 m/s gust.
+TEST(Wind, GustChangesAreSmoothBetweenSteps) {
+    World world;
+    world.SetGusts(true, 8.0f, 2.0f, 3);
+
+    glm::vec3 prev = world.GetWindVelocity();
+    for (int i = 0; i < 3600; ++i) {  // 30 s
+        world.Step();
+        const glm::vec3 now = world.GetWindVelocity();
+        EXPECT_LT(glm::length(now - prev), 0.2f);
+        prev = now;
+    }
+}
+// ---------------------------------------------------------------------------
+// Tipping torque from off-center drag.
+// Wind of 10 m/s along +X. Drag at the center of pressure, 1.5 m below the center:
+// F = 392 N along +X, r = (0, -1.5, 0), so tau_z = r_y * (-F_x) ... = +588 N*m.
+// Inertia about Z is 5395.8 kg*m^2, so after 0.1 s: wz = 588 / 5395.8 * 0.1 = 0.0109 rad/s.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // Still rocket in a 10 m/s wind, atmosphere on, gravity off, for `seconds`.
+    glm::vec3 WindSpinAfter(float seconds, const glm::vec3& centerOfPressure) {
+        World world;
+        world.SetGravity({ 0.0f, 0.0f, 0.0f });
+        world.SetAtmosphere(true);
+        world.SetBaseWind({ 10.0f, 0.0f, 0.0f });
+
+        RigidBody rocket = MakeRocketBody();
+        rocket.SetCenterOfPressure(centerOfPressure);
+        rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+        const std::size_t id = world.AddBody(rocket);
+
+        const int steps = static_cast<int>(seconds / World::kFixedDt + 0.5f);
+        RunSteps(world, steps);
+        return world.GetBody(id).GetAngularVelocity();
+    }
+
+}  // namespace
+
+// Drag below the center of mass spins the rocket about Z, with the predicted size.
+// Density is taken at the test altitude (1000 m), not sea level.
+TEST(Tipping, OffCenterDragSpinsRocket) {
+    const float rho = 1.225f * std::exp(-1000.0f / 8500.0f);   // about 1.089 kg/m^3
+    const float drag = 0.5f * rho * 0.8f * 8.0f * 10.0f * 10.0f;  // 1/2 rho Cd A v^2, A = 2 r h
+    const float torque = 1.5f * drag;                             // lever arm 1.5 m
+    const float inertiaZ = 1000.0f * (3.0f * 0.25f + 64.0f) / 12.0f;
+    const float expectedWz = torque / inertiaZ * 0.1f;            // about 0.0097 rad/s
+
+    const glm::vec3 w = WindSpinAfter(0.1f, { 0.0f, -1.5f, 0.0f });
+    EXPECT_NEAR(w.z, expectedWz, 0.0005f);
+    EXPECT_NEAR(w.x, 0.0f, 1e-4f);
+    EXPECT_NEAR(w.y, 0.0f, 1e-4f);
+}
+// Drag at the center of mass produces no spin, so the old behavior is preserved.
+TEST(Tipping, CenterOfPressureAtCenterGivesNoSpin) {
+    const glm::vec3 w = WindSpinAfter(0.1f, { 0.0f, 0.0f, 0.0f });
+    EXPECT_NEAR(glm::length(w), 0.0f, 1e-5f);
+}
+
+// Moving the center of pressure above the center of mass reverses the spin.
+TEST(Tipping, CenterOfPressureAboveCenterReversesSpin) {
+    const glm::vec3 below = WindSpinAfter(0.1f, { 0.0f, -1.5f, 0.0f });
+    const glm::vec3 above = WindSpinAfter(0.1f, { 0.0f, +1.5f, 0.0f });
+    EXPECT_LT(above.z, 0.0f);
+    EXPECT_NEAR(above.z, -below.z, 1e-4f);
+}
+
+// Weathervaning: with the center of pressure below the center of mass, the nose
+// (top) turns into the wind. Wind is along +X, so the nose should move to -X.
+// A rotation about +Z sends the up axis to (-sin t, cos t, 0), so up.x must be negative.
+TEST(Tipping, NoseTurnsIntoWind) {
+    World world;
+    world.SetGravity({ 0.0f, 0.0f, 0.0f });
+    world.SetAtmosphere(true);
+    world.SetBaseWind({ 10.0f, 0.0f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();  // center of pressure is 1.5 m below center
+    rocket.SetPosition({ 0.0f, 1000.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    RunSteps(world, 240);  // 2 s, no attitude control
+
+    const RigidBody& body = world.GetBody(id);
+    const glm::vec3 up = body.GetRotationMatrix() * glm::vec3(0.0f, 1.0f, 0.0f);
+    EXPECT_GT(body.GetTiltDegrees(), 0.1f);
+    EXPECT_LT(up.x, 0.0f);
 }

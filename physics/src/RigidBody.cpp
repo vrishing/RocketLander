@@ -156,25 +156,61 @@ namespace rocketphys {
         constexpr float kPi = 3.14159265f;
     }  // namespace
 
-    glm::vec3 RigidBody::DragForce(float airDensity, float dragCoefficient) const {
-        const float speed = glm::length(velocity_);
+    glm::vec3 RigidBody::DragForce(float airDensity, float dragCoefficient,
+        const glm::vec3& airVelocity) const {
+        // Drag depends on the velocity relative to the air, not to the ground.
+        const glm::vec3 relV = velocity_ - airVelocity;
+        const float speed = glm::length(relV);
         if (speed < 1e-6f || airDensity <= 0.0f || dragCoefficient <= 0.0f) {
             return glm::vec3(0.0f);
         }
 
-        // Angle between the velocity and the body's long axis. cos = 1 means falling
-        // along the axis; cos = 0 means moving sideways. Use |cos| because drag does
-        // not care which end of the rocket leads.
+        // Angle between the relative velocity and the long axis, using |cos| since
+        // drag does not care which end leads.
         const glm::vec3 up = GetRotationMatrix() * glm::vec3(0.0f, 1.0f, 0.0f);
-        const float cosT = std::fabs(glm::dot(velocity_, up)) / speed;
+        const float cosT = std::fabs(glm::dot(relV, up)) / speed;
         const float sinT = std::sqrt(std::max(0.0f, 1.0f - cosT * cosT));
 
         // Reference area blends between the end disk (pi r^2) and the side wall (2 r h).
         const float height = 2.0f * halfHeight_;
         const float area = kPi * radius_ * radius_ * cosT + 2.0f * radius_ * height * sinT;
 
-        // F = -1/2 * rho * Cd * A * |v| * v. The minus sign makes it oppose the motion.
-        return -0.5f * airDensity * dragCoefficient * area * speed * velocity_;
+        // F = -1/2 * rho * Cd * A * |v_rel| * v_rel. The minus sign opposes the relative motion.
+        return -0.5f * airDensity * dragCoefficient * area * speed * relV;
+    }
+    glm::vec3 RigidBody::GetCenterOfPressureWorld() const {
+        return position_ + GetRotationMatrix() * localCenterOfPressure_;
+    }
+    // ---------- Legs ----------
+
+    std::size_t RigidBody::AddLeg(const Leg& leg) {
+        legs_.push_back(leg);
+        return legs_.size() - 1;
+    }
+
+    bool RigidBody::HasDeployedLegs() const {
+        for (const Leg& leg : legs_) {
+            if (leg.deployed) return true;
+        }
+        return false;
+    }
+
+    glm::vec3 RigidBody::GetLegFootWorld(std::size_t index) const {
+        return position_ + GetRotationMatrix() * legs_.at(index).localFoot;
+    }
+
+    void RigidBody::UpdateLegDeployment() {
+        if (legs_.empty() || HasDeployedLegs()) return;  // latched: stays out until ResetLegs()
+
+        const float baseAltitude = position_.y - halfHeight_;  // bottom of the body above the floor
+        const bool descendingFast = velocity_.y < -kLegDeploySpeed;
+        if (baseAltitude < kLegDeployAltitude && descendingFast) {
+            for (Leg& leg : legs_) leg.deployed = true;
+        }
+    }
+
+    void RigidBody::ResetLegs() {
+        for (Leg& leg : legs_) leg.deployed = false;
     }
 
 }  // namespace rocketphys

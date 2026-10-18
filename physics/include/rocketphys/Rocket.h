@@ -17,7 +17,9 @@ namespace rocketphys {
     inline constexpr std::size_t kRollABottom = 6;
     inline constexpr std::size_t kRollBTop = 7;
     inline constexpr std::size_t kRollBBottom = 8;
-
+    // Center of pressure for the rocket, body axes, m from the center of mass.
+// Negative Y is toward the base. This is the stable, weathervaning arrangement.
+    inline constexpr float kCenterOfPressureY = -1.5f;
     // 1000 kg cylinder, radius 0.5 m, height 8 m, centered on the origin.
     RigidBody MakeRocketBody();
 
@@ -35,4 +37,11 @@ namespace rocketphys {
     // step, before world.Step(). Leaves the main engine alone.
     void UpdateRocketAttitude(RigidBody& rocket, const AttitudeGains& gains = AttitudeGains{});
 
+    // The same rocket with four legs at 90 degree spacing. Feet sit 1.0 m from the
+// axis and 0.5 m below the base. Legs start stowed.
+    // Leg geometry. The angle is measured at the joint, between the body wall (pointing up)
+// and the leg. 100 degrees means the leg slopes 10 degrees below horizontal.
+    inline constexpr float kLegLength = 1.41421356f;  // m, double the previous 0.71 m
+    inline constexpr float kLegAngleDeg = 100.0f;     // degrees from the body's up axis
+    RigidBody MakeRocketWithLegs();
 }  // namespace rocketphys

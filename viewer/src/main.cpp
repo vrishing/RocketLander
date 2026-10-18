@@ -54,6 +54,7 @@ namespace {
         rocket.SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
         rocket.ZeroMotion();
         rocket.ResetLandingStatus();
+        rocket.ResetLegs();
     }
 
     // Same start, but tilted about the X axis.
@@ -63,6 +64,7 @@ namespace {
         rocket.SetOrientation(glm::angleAxis(glm::radians(degrees), glm::vec3(1.0f, 0.0f, 0.0f)));
         rocket.ZeroMotion();
         rocket.ResetLandingStatus();
+        rocket.ResetLegs();
     }
 
     // Returns the main-engine throttle for this physics step.
@@ -116,13 +118,28 @@ namespace {
         }
     }
 
+    // Draws a line from the lower ring of the body out to each deployed leg's foot.
+    // Draws a line from the body wall out to each deployed leg's foot.
+    void BuildLegLines(const rocketphys::RigidBody& rocket, std::vector<glm::vec3>& lines) {
+        lines.clear();
+        const std::vector<rocketphys::Leg>& legs = rocket.GetLegs();
+        const glm::mat3 R = rocket.GetRotationMatrix();
+
+        for (std::size_t i = 0; i < legs.size(); ++i) {
+            if (!legs[i].deployed) continue;
+            lines.push_back(rocket.GetPosition() + R * legs[i].localAttach);
+            lines.push_back(rocket.GetLegFootWorld(i));
+        }
+    }
+
     void PrintControls() {
         std::printf(
             "Controls:\n"
             "  H  hover on/off (automatic mode)\n"
             "  M  manual thruster test mode on/off\n"
             "  1-5 (manual mode, hold): main, pitchA, pitchB, rollA, rollB\n"
-            "  T  tilt rocket 10 degrees   R  reset   V  thrust arrows   Q/E  orbit   Esc  quit\n");
+            "  T  tilt rocket 10 degrees   R  reset   V  thrust arrows   Q/E  orbit   Esc  quit\n"
+            "  Legs deploy automatically below 15 m while descending faster than 1 m/s.\n");
     }
 
 }  // namespace
@@ -164,15 +181,20 @@ int main(int /*argc*/, char** /*argv*/) {
     // ---------- Simulation ----------
     rocketphys::World world;
     world.SetGravity({ 0.0f, -9.81f, 0.0f });
-    const std::size_t rocketId = world.AddBody(rocketphys::MakeRocketBody());
+    const std::size_t rocketId = world.AddBody(rocketphys::MakeRocketWithLegs());
     ResetRocket(world, rocketId);
     bool hoverOn = true;
     bool manualMode = false;
     bool showThrust = true;
+    bool legsWereOut = false;  // used to print once when the legs deploy
+    bool atmosphereOn = false;
+    bool gustsOn = false;
+    bool windOn = false;
 
     // Reused every frame so we don't reallocate.
     std::vector<glm::vec3> mainLines;
     std::vector<glm::vec3> rcsLines;
+    std::vector<glm::vec3> legLines;
 
     // ---------- Camera (orbits the rocket) ----------
     float camYaw = 0.6f;
@@ -196,8 +218,8 @@ int main(int /*argc*/, char** /*argv*/) {
             if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                 switch (e.key.keysym.sym) {
                 case SDLK_ESCAPE: running = false; break;
-                case SDLK_r: ResetRocket(world, rocketId); break;
-                case SDLK_t: ResetRocketTilted(world, rocketId, 10.0f); break;
+                case SDLK_r: ResetRocket(world, rocketId); legsWereOut = false; break;
+                case SDLK_t: ResetRocketTilted(world, rocketId, 10.0f); legsWereOut = false; break;
                 case SDLK_h:
                     hoverOn = !hoverOn;
                     std::printf("Hover %s\n", hoverOn ? "ON" : "OFF");
@@ -209,6 +231,21 @@ int main(int /*argc*/, char** /*argv*/) {
                 case SDLK_v:
                     showThrust = !showThrust;
                     std::printf("Thrust vectors %s\n", showThrust ? "ON" : "OFF");
+                    break;
+                case SDLK_a:
+                    atmosphereOn = !atmosphereOn;
+                    world.SetAtmosphere(atmosphereOn);
+                    std::printf("Atmosphere %s\n", atmosphereOn ? "ON" : "OFF");
+                    break;
+                case SDLK_b:
+                    windOn = !windOn;
+                    world.SetBaseWind(windOn ? glm::vec3(6.0f, 0.0f, 0.0f) : glm::vec3(0.0f));
+                    std::printf("Base wind %s\n", windOn ? "6 m/s along +X" : "OFF");
+                    break;
+                case SDLK_g:
+                    gustsOn = !gustsOn;
+                    world.SetGusts(gustsOn, 8.0f, 4.0f, 1234);
+                    std::printf("Gusts %s\n", gustsOn ? "ON" : "OFF");
                     break;
                 default: break;
                 }
@@ -250,6 +287,13 @@ int main(int /*argc*/, char** /*argv*/) {
             accumulator -= rocketphys::World::kFixedDt;
 
             const rocketphys::RigidBody& r = world.GetBody(rocketId);
+
+            // Legs deploy inside World::Step(). Print once, on the step they come out.
+            if (r.HasDeployedLegs() && !legsWereOut) {
+                std::printf("Legs deployed at t=%.2f s, y=%.2f m, vy=%.2f m/s\n",
+                    world.GetTime(), r.GetPosition().y, r.GetVelocity().y);
+                legsWereOut = true;
+            }
 
             // Manual mode: print angular velocity every 0.25 s, for checking signs.
             if (manualMode && world.GetStepCount() % 30 == 0) {
@@ -299,6 +343,9 @@ int main(int /*argc*/, char** /*argv*/) {
             renderer.DrawLines(viewProj, mainLines, glm::vec3(1.0f, 0.6f, 0.1f));
             renderer.DrawLines(viewProj, rcsLines, glm::vec3(0.3f, 0.8f, 1.0f));
         }
+
+        BuildLegLines(rocket, legLines);
+        renderer.DrawLines(viewProj, legLines, glm::vec3(0.4f, 1.0f, 0.4f));
 
         SDL_GL_SwapWindow(window);
     }
