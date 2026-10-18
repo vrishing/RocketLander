@@ -7,6 +7,9 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "rocketphys/LandingEnv.h"
+#include <cstdio>
+
+#include "rocketphys/Baseline.h"
 
 using namespace rocketphys;
 
@@ -201,18 +204,20 @@ TEST(Env, WindSensorReadsBodyVelocityWhenCalm) {
 
 // With a steady 10 m/s base wind and a rocket at rest, the sensor reads the air
 // moving past it: -10 m/s along X, shown as -10 / 50 in the observation.
+// Steady 10 m/s wind along +X, rocket at rest: the air moves past the rocket at -10 m/s
+// relative to it, shown as -10 / 50 in the observation.
 TEST(Env, WindSensorReadsAirVelocityInWind) {
     EnvConfig cfg;
     cfg.windSensor = true;
     cfg.atmosphere = true;
+    cfg.baseWind = { 10.0f, 0.0f, 0.0f };
     LandingEnv env(cfg);
 
     env.ResetFromState({ 0.0f, 100.0f, 0.0f }, glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
         glm::vec3(0.0f), glm::vec3(0.0f));
-    // Gusts are off in this config, so the wind is zero. Set a base wind directly in the test.
-    // (The environment exposes no setter, so this checks the calm case only.)
     const Observation o = env.GetObservation();
-    EXPECT_NEAR(o[18], 0.0f, 1e-4f);
+
+    EXPECT_NEAR(o[18], -10.0f / 50.0f, 1e-4f);
 }
 
 // Same seed with wind on gives the same wind history, so the same final state.
@@ -231,4 +236,108 @@ TEST(Env, WindEpisodeIsReproducible) {
         };
 
     EXPECT_EQ(finalObservation(9), finalObservation(9));
+}
+
+// Runs the baseline until the episode ends, or the policy-step limit is reached.
+namespace {
+
+    StepResult RunBaseline(LandingEnv& env, const LandingBaseline& pilot, int maxPolicySteps) {
+        StepResult r;
+        for (int i = 0; i < maxPolicySteps; ++i) {
+            r = env.Step(pilot.Compute(env.Rocket()));
+            if (r.terminated || r.truncated) break;
+        }
+        return r;
+    }
+
+}  // namespace
+
+// The sign check for the baseline: a 10 degree tilt must shrink within 1 s.
+// The sign check for the baseline: a 10 degree tilt must shrink. The attitude loop has a
+// time constant of about 2 s, so the check runs for 3 s, the same window as the attitude test.
+TEST(Baseline, ReducesTiltFromTenDegrees) {
+    LandingEnv env;
+    env.ResetFromLowestPoint(100.0f, 0.0f, 0.0f,
+        glm::angleAxis(glm::radians(10.0f), glm::vec3(1.0f, 0.0f, 0.0f)),
+        glm::vec3(0.0f), glm::vec3(0.0f));
+    LandingBaseline pilot;
+
+    for (int i = 0; i < 90; ++i) env.Step(pilot.Compute(env.Rocket()));  // 90 x 4 = 360 steps = 3 s
+
+    EXPECT_LT(env.Rocket().GetTiltDegrees(), 5.0f);
+}
+
+// An upright drop from 100 m must end as a soft landing.
+TEST(Baseline, LandsUprightFromHeight) {
+    LandingEnv env;
+    env.ResetFromLowestPoint(100.0f, 0.0f, 0.0f, glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f), glm::vec3(0.0f));
+    LandingBaseline pilot;
+
+    const StepResult r = RunBaseline(env, pilot, 1800);  // 60 s cap
+
+    EXPECT_EQ(r.status, LandingStatus::Landed);
+    EXPECT_LT(env.Rocket().GetTouchdownSpeed(), kSoftLandingSpeed);
+    EXPECT_LT(env.Rocket().GetTouchdownTiltDeg(), kSoftLandingTiltDeg);
+}
+
+// Success rate over 100 seeds, upright still starts at random heights. This is the bar
+// the trained policy has to beat. The threshold is a goal, and the printed count tells you
+// how far off you are if it fails.
+TEST(Baseline, SuccessRateUprightStarts) {
+    EnvConfig cfg;
+    cfg.difficulty = 0.0f;
+    LandingBaseline pilot;
+
+    const int total = 100;
+    int landed = 0;
+    for (std::uint32_t seed = 1; seed <= static_cast<std::uint32_t>(total); ++seed) {
+        LandingEnv env(cfg);
+        env.Reset(seed);
+        if (RunBaseline(env, pilot, 1800).status == LandingStatus::Landed) ++landed;
+    }
+
+    std::printf("Baseline upright success: %d / %d\n", landed, total);
+    EXPECT_GE(landed, 90);
+}
+
+// Full random starts: report only, no pass or fail. This is the harder benchmark, and the
+// policy's full-difficulty result will be compared against this number.
+TEST(Baseline, SuccessRateFullRandomStarts) {
+    EnvConfig cfg;
+    cfg.difficulty = 1.0f;
+    LandingBaseline pilot;
+
+    const int total = 100;
+    int landed = 0;
+    for (std::uint32_t seed = 1; seed <= static_cast<std::uint32_t>(total); ++seed) {
+        LandingEnv env(cfg);
+        env.Reset(seed);
+        if (RunBaseline(env, pilot, 1800).status == LandingStatus::Landed) ++landed;
+    }
+
+    std::printf("Baseline full-random success: %d / %d\n", landed, total);
+}
+
+// Diagnostic: bins the full-random results by starting tilt, to show where the baseline fails.
+TEST(Baseline, DiagnoseFailuresByStartTilt) {
+    EnvConfig cfg;
+    cfg.difficulty = 1.0f;
+    LandingBaseline pilot;
+
+    int total[4] = { 0, 0, 0, 0 };
+    int landed[4] = { 0, 0, 0, 0 };
+    for (std::uint32_t seed = 1; seed <= 100; ++seed) {
+        LandingEnv env(cfg);
+        env.Reset(seed);
+        const float tilt = env.Rocket().GetTiltDegrees();
+        const int bin = std::min(3, static_cast<int>(tilt / 45.0f));
+        const StepResult r = RunBaseline(env, pilot, 1800);
+        ++total[bin];
+        if (r.status == LandingStatus::Landed) ++landed[bin];
+    }
+
+    for (int b = 0; b < 4; ++b) {
+        std::printf("start tilt %3d-%3d deg: %d / %d landed\n", b * 45, b * 45 + 45, landed[b], total[b]);
+    }
 }

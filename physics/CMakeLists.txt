@@ -5,6 +5,7 @@ add_library(rocketphys STATIC
     src/World.cpp
     src/Rocket.cpp
     src/LandingEnv.cpp
+    src/Baseline.cpp
 )
 
 # PUBLIC: anything linking rocketphys can #include <rocketphys/...>

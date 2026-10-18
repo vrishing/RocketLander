@@ -10,8 +10,10 @@
       "architecture": {
         "value": "x64",
         "strategy": "external"
+      },
+      "cacheVariables": {
+        "Python_EXECUTABLE": "C:/Program Files/Python313/python.exe"
       }
-      //"cacheVariables": { "CMAKE_CXX_COMPILER": "cl.exe" }
     },
     {
       "name": "x64-debug",

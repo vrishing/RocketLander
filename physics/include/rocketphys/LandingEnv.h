@@ -57,6 +57,7 @@ namespace rocketphys {
         // Air. Off by default, so existing behavior is unchanged.
         bool atmosphere = false;
         float maxWindSpeed = 0.0f;          // m/s, peak gust speed. 0 means no wind.
+        glm::vec3 baseWind{ 0.0f };           // m/s, steady wind added to any gusts. Needs atmosphere.
         float gustInterval = 4.0f;          // s between gust targets
         bool windSensor = false;            // adds the air-relative velocity to the observation
 

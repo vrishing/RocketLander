@@ -32,6 +32,7 @@ namespace rocketphys {
         // Air and wind are both optional. Wind needs the atmosphere, because it acts through drag.
         if (config_.atmosphere) {
             world_.SetAtmosphere(true);
+            world_.SetBaseWind(config_.baseWind);
         }
         if (config_.atmosphere && config_.maxWindSpeed > 0.0f) {
             // Gusts are seeded from the episode seed, so the same seed gives the same wind history.
