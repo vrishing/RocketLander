@@ -491,3 +491,57 @@ TEST(Landing, StatusIsRecordedOnlyOnce) {
 
     EXPECT_EQ(world.GetBody(id).GetTouchdownSpeed(), firstSpeed);
 }
+// ---------------------------------------------------------------------------
+// Friction. The rocket lands with a 5 m/s sideways velocity, with no thrust.
+// We measure the sliding speed of the FOOT (the contact point), not the center.
+// The base sits 4 m below the center, so friction there tips the rocket over,
+// and the center's speed changes for reasons other than sliding.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // Floor-plane speed of the lowest point: its velocity is v + omega x r.
+    float FootSlideSpeed(const RigidBody& body) {
+        const glm::vec3 r = body.GetLowestPoint() - body.GetPosition();
+        const glm::vec3 footVel = body.GetVelocity() + glm::cross(body.GetAngularVelocity(), r);
+        return std::sqrt(footVel.x * footVel.x + footVel.z * footVel.z);
+    }
+
+    // Drops the rocket with its foot 5 cm above the floor and a 5 m/s sideways velocity,
+    // steps for `seconds`, and returns the foot's sliding speed.
+    float FootSlideAfter(float mu, float seconds) {
+        World world;
+        world.SetGravity({ 0.0f, -9.81f, 0.0f });
+        world.SetFriction(mu);
+
+        RigidBody rocket = MakeRocketBody();
+        rocket.SetPosition({ 0.0f, 4.05f, 0.0f });  // lowest point 5 cm above the floor
+        rocket.SetVelocity({ 5.0f, 0.0f, 0.0f });
+        const std::size_t id = world.AddBody(rocket);
+
+        const int steps = static_cast<int>(seconds / World::kFixedDt + 0.5f);
+        for (int i = 0; i < steps; ++i) world.Step();
+
+        return FootSlideSpeed(world.GetBody(id));
+    }
+
+}  // namespace
+
+// With no friction the foot keeps its sideways speed. This also checks that the
+// normal impulse is purely vertical and adds no sideways effect.
+TEST(Friction, FrictionlessFootKeepsSliding) {
+    EXPECT_NEAR(FootSlideAfter(0.0f, 1.0f), 5.0f, 0.01f);
+}
+
+// With friction 0.6 the foot must stop slipping within 1 s.
+// Friction can remove at most mu * g per second of sliding (about 5.9 m/s^2),
+// so 5 m/s takes about 0.85 s to clear.
+TEST(Friction, FrictionStopsFootSlide) {
+    EXPECT_LT(FootSlideAfter(0.6f, 1.0f), 1.0f);
+}
+
+// A stronger coefficient must leave the foot sliding less than a weaker one.
+TEST(Friction, StrongerFrictionSlowsFootMore) {
+    const float strong = FootSlideAfter(0.6f, 0.3f);
+    const float weak = FootSlideAfter(0.1f, 0.3f);
+    EXPECT_LT(strong, weak);
+}
