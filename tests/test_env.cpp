@@ -341,3 +341,21 @@ TEST(Baseline, DiagnoseFailuresByStartTilt) {
         std::printf("start tilt %3d-%3d deg: %d / %d landed\n", b * 45, b * 45 + 45, landed[b], total[b]);
     }
 }
+
+// Hovering at 100 m with no feedback reaches the time limit, and the final step must carry
+// the timeout penalty. The loop allows extra steps in case float rounding delays the cutoff.
+TEST(Reward, TimeoutPenaltyApplied) {
+    LandingEnv env;
+    env.ResetFromState({ 0.0f, 104.0f, 0.0f }, glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f), glm::vec3(0.0f));
+
+    const Action hover{ -0.2152f, 0.0f, 0.0f };
+    StepResult r;
+    for (int i = 0; i < 1900; ++i) {
+        r = env.Step(hover);
+        if (r.truncated) break;
+    }
+
+    EXPECT_TRUE(r.truncated);
+    EXPECT_LT(r.reward, -40.0f);
+}

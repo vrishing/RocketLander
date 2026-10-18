@@ -36,12 +36,14 @@ namespace rocketphys {
     using Observation = std::vector<float>;
 
     struct RewardWeights {
+        float discount = 0.999f;            // must match the PPO gamma in train.py
         float stepCost = 0.01f;             // per policy step
         float tiltCost = 0.05f;             // per policy step, times tilt / 90 deg
         float spinCost = 0.02f;             // per policy step, times |omega| in rad/s
-        float descentCost = 0.02f;          // per policy step below 30 m, times falling speed / 10 m/s
+        float altitudeShaping = 0.05f;      // potential: reward per metre of height lost
         float landedBonus = 100.0f;         // terminal, on Landed
         float crashPenalty = -100.0f;       // terminal, on Crashed
+        float timeoutPenalty = -50.0f;      // terminal, when time runs out while still flying
         float touchdownSpeedCost = 5.0f;    // terminal, times touchdown speed in m/s
         float touchdownTiltCost = 0.2f;     // terminal, times touchdown tilt in degrees
     };
@@ -114,6 +116,8 @@ namespace rocketphys {
         std::size_t rocketId_ = 0;
         bool done_ = false;
         std::mt19937 rng_{ 0 };
+        float Potential() const;            // altitude potential of the current state
+        float prevPotential_ = 0.0f;        // potential at the previous policy step
     };
 
 }  // namespace rocketphys

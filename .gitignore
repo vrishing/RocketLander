@@ -16,3 +16,4 @@ runs/
 *.zip
 models/
 python/.venv/
+python/runs/

@@ -10,7 +10,7 @@ namespace rocketphys {
     namespace {
 
         constexpr float kTwoPi = 6.28318531f;
-        constexpr float kDescentZone = 30.0f;   // m, descent penalty applies below this altitude
+        // constexpr float kDescentZone = 30.0f;   // m, descent penalty applies below this altitude
         constexpr float kObsLimit = 10.0f;      // observation clamp
 
         float Clamp(float x, float lo, float hi) { return std::clamp(x, lo, hi); }
@@ -95,6 +95,7 @@ namespace rocketphys {
         rocket.SetOrientation(orientation);
         rocket.SetVelocity(velocity);
         rocket.SetAngularVelocity(angularVelocity);
+        prevPotential_ = Potential();
         return GetObservation();
     }
 
@@ -181,14 +182,12 @@ namespace rocketphys {
 
         const float tilt = r.GetTiltDegrees();
         const float spin = glm::length(r.GetAngularVelocity());
-        const float altitude = r.GetLowestPoint().y;
-        const float fallSpeed = std::max(0.0f, -r.GetVelocity().y);
-
-        float reward = -w.stepCost - w.tiltCost * (tilt / 90.0f) - w.spinCost * spin;
-        if (altitude < kDescentZone) {
-            reward -= w.descentCost * (fallSpeed / 10.0f);
-        }
-        return reward;
+        return -w.stepCost - w.tiltCost * (tilt / 90.0f) - w.spinCost * spin;
+    }
+    float LandingEnv::Potential() const {
+        // Terminal states have potential zero. This keeps the telescoping sum exact.
+        if (Rocket().GetLandingStatus() != LandingStatus::Flying) return 0.0f;
+        return -config_.reward.altitudeShaping * Rocket().GetLowestPoint().y;
     }
 
     float LandingEnv::TerminalReward() const {
@@ -223,9 +222,19 @@ namespace rocketphys {
         result.status = Rocket().GetLandingStatus();
         result.terminated = (result.status != LandingStatus::Flying);
         result.truncated = !result.terminated && SimTime() >= config_.maxEpisodeSeconds;
-        result.reward = result.terminated ? TerminalReward() : ShapingReward();
-        result.observation = GetObservation();
 
+        // Potential-based shaping: gamma * Phi(next state) - Phi(this state).
+        // Summed over an episode it reduces to the start and end values only, so it rewards
+        // descent without changing which policy is best.
+        const float phiNow = Potential();
+        float reward = ShapingReward() + config_.reward.discount * phiNow - prevPotential_;
+        prevPotential_ = phiNow;
+
+        if (result.terminated) reward += TerminalReward();
+        if (result.truncated) reward += config_.reward.timeoutPenalty;
+
+        result.reward = reward;
+        result.observation = GetObservation();
         done_ = result.terminated || result.truncated;
         return result;
     }
