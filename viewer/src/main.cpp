@@ -33,20 +33,36 @@ namespace {
     // Display only: meters of arrow per newton of thrust. Physics is unaffected.
     constexpr float kThrustDisplayScale = 0.0002f;
 
+    // Manual test mode: each key fires one group of thrusters while held.
+    struct ThrusterGroup {
+        SDL_Scancode key;
+        const char* name;
+        std::vector<std::size_t> thrusters;
+    };
+
+    const std::vector<ThrusterGroup> kThrusterGroups = {
+        { SDL_SCANCODE_1, "main",{ rocketphys::kMainEngine } },
+        { SDL_SCANCODE_2, "pitchA",{ rocketphys::kPitchATop, rocketphys::kPitchABottom } },
+        { SDL_SCANCODE_3, "pitchB",{ rocketphys::kPitchBTop, rocketphys::kPitchBBottom } },
+        { SDL_SCANCODE_4, "rollA",{ rocketphys::kRollATop, rocketphys::kRollABottom } },
+        { SDL_SCANCODE_5, "rollB",{ rocketphys::kRollBTop, rocketphys::kRollBBottom } },
+    };
+
     void ResetRocket(rocketphys::World& world, std::size_t id) {
         rocketphys::RigidBody& rocket = world.GetBody(id);
         rocket.SetPosition(kStartPosition);
         rocket.SetOrientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
         rocket.ZeroMotion();
+        rocket.ResetLandingStatus();
     }
 
-    // Same start, but tilted about the X axis. The tilt is built from an axis-angle
-    // quaternion, not Euler angles.
+    // Same start, but tilted about the X axis.
     void ResetRocketTilted(rocketphys::World& world, std::size_t id, float degrees) {
         rocketphys::RigidBody& rocket = world.GetBody(id);
         rocket.SetPosition(kStartPosition);
         rocket.SetOrientation(glm::angleAxis(glm::radians(degrees), glm::vec3(1.0f, 0.0f, 0.0f)));
         rocket.ZeroMotion();
+        rocket.ResetLandingStatus();
     }
 
     // Returns the main-engine throttle for this physics step.
@@ -56,8 +72,26 @@ namespace {
         return kHoverThrottle + kHoverKp * error - kHoverKd * vy;
     }
 
+    // Manual mode: each group is on while its key is held, off otherwise.
+    // The groups cover all nine thrusters, so every throttle is set each step.
+    void ApplyManualThrottles(rocketphys::RigidBody& rocket, const Uint8* keys) {
+        for (const ThrusterGroup& g : kThrusterGroups) {
+            const float value = keys[g.key] ? 1.0f : 0.0f;
+            for (std::size_t index : g.thrusters) {
+                rocket.SetThrottle(index, value);
+            }
+        }
+    }
+
+    // Automatic mode: only the main engine is driven, so RCS is switched off.
+    void ClearRcsThrottles(rocketphys::RigidBody& rocket) {
+        const std::size_t count = rocket.GetThrusters().size();
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i != rocketphys::kMainEngine) rocket.SetThrottle(i, 0.0f);
+        }
+    }
+
     // Builds arrow line segments for every thruster that is firing.
-    // Arrows start at the thruster's world position and point in the push direction.
     void BuildThrustLines(const rocketphys::RigidBody& rocket,
         std::vector<glm::vec3>& mainLines,
         std::vector<glm::vec3>& rcsLines) {
@@ -80,6 +114,15 @@ namespace {
             target.push_back(start);
             target.push_back(start + dir * length);
         }
+    }
+
+    void PrintControls() {
+        std::printf(
+            "Controls:\n"
+            "  H  hover on/off (automatic mode)\n"
+            "  M  manual thruster test mode on/off\n"
+            "  1-5 (manual mode, hold): main, pitchA, pitchB, rollA, rollB\n"
+            "  T  tilt rocket 10 degrees   R  reset   V  thrust arrows   Q/E  orbit   Esc  quit\n");
     }
 
 }  // namespace
@@ -124,6 +167,7 @@ int main(int /*argc*/, char** /*argv*/) {
     const std::size_t rocketId = world.AddBody(rocketphys::MakeRocketBody());
     ResetRocket(world, rocketId);
     bool hoverOn = true;
+    bool manualMode = false;
     bool showThrust = true;
 
     // Reused every frame so we don't reallocate.
@@ -134,6 +178,8 @@ int main(int /*argc*/, char** /*argv*/) {
     float camYaw = 0.6f;
     float camPitch = 0.2f;
     float camDistance = 35.0f;
+
+    PrintControls();
 
     // ---------- Main loop ----------
     double accumulator = 0.0;
@@ -156,6 +202,10 @@ int main(int /*argc*/, char** /*argv*/) {
                     hoverOn = !hoverOn;
                     std::printf("Hover %s\n", hoverOn ? "ON" : "OFF");
                     break;
+                case SDLK_m:
+                    manualMode = !manualMode;
+                    std::printf("Manual thruster test %s\n", manualMode ? "ON" : "OFF");
+                    break;
                 case SDLK_v:
                     showThrust = !showThrust;
                     std::printf("Thrust vectors %s\n", showThrust ? "ON" : "OFF");
@@ -175,7 +225,7 @@ int main(int /*argc*/, char** /*argv*/) {
         previous = now;
         accumulator += std::min(frameTime, 0.25);  // clamp: avoids a spiral of death after a stall
 
-        // ---- Camera orbit keys ----
+        // ---- Keyboard state (read once per frame) ----
         const Uint8* keys = SDL_GetKeyboardState(nullptr);
         const float orbit = 1.5f * static_cast<float>(frameTime);
         if (keys[SDL_SCANCODE_Q]) camYaw -= orbit;
@@ -184,17 +234,35 @@ int main(int /*argc*/, char** /*argv*/) {
         // ---- Fixed-timestep physics ----
         while (accumulator >= rocketphys::World::kFixedDt) {
             rocketphys::RigidBody& rocket = world.GetBody(rocketId);
-            const float throttle = hoverOn ? HoverThrottle(rocket) : 0.0f;
-            rocket.SetThrottle(rocketphys::kMainEngine, throttle);
+
+            float mainThrottle = 0.0f;
+            if (manualMode) {
+                ApplyManualThrottles(rocket, keys);
+                mainThrottle = rocket.GetThrusters()[rocketphys::kMainEngine].throttle;
+            }
+            else {
+                mainThrottle = hoverOn ? HoverThrottle(rocket) : 0.0f;
+                rocket.SetThrottle(rocketphys::kMainEngine, mainThrottle);
+                ClearRcsThrottles(rocket);
+            }
 
             world.Step();
             accumulator -= rocketphys::World::kFixedDt;
 
-            // Print once per simulated second so you can check the numbers.
-            if (world.GetStepCount() % 120 == 0) {
-                const rocketphys::RigidBody& r = world.GetBody(rocketId);
+            const rocketphys::RigidBody& r = world.GetBody(rocketId);
+
+            // Manual mode: print angular velocity every 0.25 s, for checking signs.
+            if (manualMode && world.GetStepCount() % 30 == 0) {
+                const glm::vec3 w = r.GetAngularVelocity();
+                std::printf("t=%6.2f  y=%8.3f  vy=%7.3f  w=(%7.3f, %7.3f, %7.3f)  tilt=%6.2f deg\n",
+                    world.GetTime(), r.GetPosition().y, r.GetVelocity().y,
+                    w.x, w.y, w.z, r.GetTiltDegrees());
+            }
+
+            // Automatic mode: once per simulated second.
+            if (!manualMode && world.GetStepCount() % 120 == 0) {
                 std::printf("t=%6.2f  y=%8.3f  vy=%8.3f  throttle=%.3f\n",
-                    world.GetTime(), r.GetPosition().y, r.GetVelocity().y, throttle);
+                    world.GetTime(), r.GetPosition().y, r.GetVelocity().y, mainThrottle);
             }
         }
 
@@ -220,14 +288,12 @@ int main(int /*argc*/, char** /*argv*/) {
 
         renderer.DrawGrid(viewProj);
 
-        // The renderer draws a 1 x 1 x 1 box. Scale it to the rocket's size.
         const glm::mat4 model =
             glm::translate(glm::mat4(1.0f), rocket.GetPosition()) *
             glm::mat4_cast(rocket.GetOrientation()) *
             glm::scale(glm::mat4(1.0f), glm::vec3(2.0f * kRocketRadius, kRocketHeight, 2.0f * kRocketRadius));
         renderer.DrawBody(viewProj, model);
 
-        // Thrust vectors: orange for the main engine, light blue for RCS.
         if (showThrust) {
             BuildThrustLines(rocket, mainLines, rcsLines);
             renderer.DrawLines(viewProj, mainLines, glm::vec3(1.0f, 0.6f, 0.1f));

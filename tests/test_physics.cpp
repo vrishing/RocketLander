@@ -400,3 +400,94 @@ TEST(Contact, UprightRocketLandsAndStaysUpright) {
     EXPECT_NEAR(body.GetLowestPoint().y, 0.0f, 0.01f);
     EXPECT_LT(UpTiltDegrees(body), 0.1f);
 }
+
+// ---------------------------------------------------------------------------
+// Landing detection.
+// ---------------------------------------------------------------------------
+namespace {
+
+    // Steps the world until the rocket leaves Flying. Returns false if it never lands.
+    bool RunUntilTouchdown(World& world, std::size_t id, int maxSteps) {
+        for (int i = 0; i < maxSteps; ++i) {
+            world.Step();
+            if (world.GetBody(id).GetLandingStatus() != LandingStatus::Flying) return true;
+        }
+        return false;
+    }
+
+}  // namespace
+
+// The classification rule on its own, at the limits.
+TEST(Landing, ClassifyRulesMatchLimits) {
+    EXPECT_EQ(ClassifyTouchdown(1.0f, 5.0f), LandingStatus::Landed);
+    EXPECT_EQ(ClassifyTouchdown(3.0f, 5.0f), LandingStatus::Crashed);   // too fast
+    EXPECT_EQ(ClassifyTouchdown(1.0f, 15.0f), LandingStatus::Crashed);  // too tilted
+}
+
+// Lowest point 5 cm above the floor, so impact speed is sqrt(2 * 9.81 * 0.05) = 0.99 m/s.
+TEST(Landing, GentleUprightLandingIsLanded) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 4.05f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    ASSERT_TRUE(RunUntilTouchdown(world, id, 2400));  // 20 s cap
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_EQ(body.GetLandingStatus(), LandingStatus::Landed);
+    EXPECT_NEAR(body.GetTouchdownSpeed(), 0.99f, 0.1f);
+    EXPECT_LT(body.GetTouchdownTiltDeg(), 0.1f);
+}
+
+// Dropped from 100 m: impact speed is about 43 m/s, far over the limit.
+TEST(Landing, FastUprightDropIsCrashed) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 100.0f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    ASSERT_TRUE(RunUntilTouchdown(world, id, 4800));  // 40 s cap
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_EQ(body.GetLandingStatus(), LandingStatus::Crashed);
+    EXPECT_GT(body.GetTouchdownSpeed(), 40.0f);
+}
+
+// Tilted 30 degrees and dropped from 5 m. Tilt is set before any torque acts,
+// so the recorded touchdown tilt should be the starting 30 degrees.
+TEST(Landing, TiltedDropIsCrashed) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 5.0f, 0.0f });
+    rocket.SetOrientation(glm::angleAxis(glm::radians(30.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    const std::size_t id = world.AddBody(rocket);
+
+    ASSERT_TRUE(RunUntilTouchdown(world, id, 2400));
+
+    const RigidBody& body = world.GetBody(id);
+    EXPECT_EQ(body.GetLandingStatus(), LandingStatus::Crashed);
+    EXPECT_NEAR(body.GetTouchdownTiltDeg(), 30.0f, 0.5f);
+}
+
+// Status is recorded once. A second bounce must not overwrite the first touchdown.
+TEST(Landing, StatusIsRecordedOnlyOnce) {
+    World world;
+    world.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+    RigidBody rocket = MakeRocketBody();
+    rocket.SetPosition({ 0.0f, 4.05f, 0.0f });
+    const std::size_t id = world.AddBody(rocket);
+
+    ASSERT_TRUE(RunUntilTouchdown(world, id, 2400));
+    const float firstSpeed = world.GetBody(id).GetTouchdownSpeed();
+
+    for (int i = 0; i < 1200; ++i) world.Step();  // 10 more seconds, including any bounces
+
+    EXPECT_EQ(world.GetBody(id).GetTouchdownSpeed(), firstSpeed);
+}
