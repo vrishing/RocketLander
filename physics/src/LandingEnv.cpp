@@ -10,7 +10,6 @@ namespace rocketphys {
     namespace {
 
         constexpr float kTwoPi = 6.28318531f;
-        constexpr float kHalfHeight = 4.0f;     // MakeRocketBody() half-height, m
         constexpr float kDescentZone = 30.0f;   // m, descent penalty applies below this altitude
         constexpr float kObsLimit = 10.0f;      // observation clamp
 
@@ -21,12 +20,24 @@ namespace rocketphys {
     LandingEnv::LandingEnv(const EnvConfig& config) : config_(config) {
         config_.difficulty = Clamp(config_.difficulty, 0.0f, 1.0f);
         config_.actionRepeat = std::max(1, config_.actionRepeat);
+        config_.maxWindSpeed = std::max(0.0f, config_.maxWindSpeed);
+        config_.gustInterval = std::max(0.1f, config_.gustInterval);
         Reset(0);
     }
 
-    void LandingEnv::BuildWorld() {
+    void LandingEnv::BuildWorld(std::uint32_t seed) {
         world_ = World();
         world_.SetGravity({ 0.0f, -9.81f, 0.0f });
+
+        // Air and wind are both optional. Wind needs the atmosphere, because it acts through drag.
+        if (config_.atmosphere) {
+            world_.SetAtmosphere(true);
+        }
+        if (config_.atmosphere && config_.maxWindSpeed > 0.0f) {
+            // Gusts are seeded from the episode seed, so the same seed gives the same wind history.
+            world_.SetGusts(true, config_.maxWindSpeed, config_.gustInterval, seed);
+        }
+
         rocketId_ = world_.AddBody(MakeRocketBody());
         done_ = false;
     }
@@ -35,18 +46,21 @@ namespace rocketphys {
         config_.difficulty = Clamp(d, 0.0f, 1.0f);
     }
 
+    std::size_t LandingEnv::ObservationSize() const {
+        return config_.windSensor ? kBaseObsSize + kWindSensorObsSize : kBaseObsSize;
+    }
+
     Observation LandingEnv::Reset(std::uint32_t seed) {
         rng_.seed(seed);
         std::uniform_real_distribution<float> U(0.0f, 1.0f);
         const float d = config_.difficulty;
 
-        // Height: uniform over the configured range. Not scaled by difficulty.
+        // Altitude of the LOWEST point, uniform over the configured range.
         const float u0 = U(rng_);
-        const float height = config_.minStartHeight +
+        const float altitude = config_.minStartHeight +
             (config_.maxStartHeight - config_.minStartHeight) * u0;
 
         // Orientation: uniform random rotation (Shoemake's method), blended from upright by difficulty.
-        // Parameter names: u1 picks the magnitude split, u2 and u3 pick the two angles.
         const float u1 = U(rng_);
         const float u2 = U(rng_);
         const float u3 = U(rng_);
@@ -61,28 +75,39 @@ namespace rocketphys {
             glm::normalize(glm::slerp(glm::quat(1.0f, 0.0f, 0.0f, 0.0f), randomQ, d));
 
         // Velocity: sideways in both directions, downward only, scaled by difficulty.
-        // Each random draw is its own statement so the order is fixed on every compiler.
         const float vmax = config_.maxStartSpeed * d;
         const float u4 = U(rng_);
         const float u5 = U(rng_);
         const float u6 = U(rng_);
         const glm::vec3 velocity((2.0f * u4 - 1.0f) * vmax, -u5 * vmax, (2.0f * u6 - 1.0f) * vmax);
 
-        // Position: the body center sits kHalfHeight above the requested lowest-point altitude.
-        const glm::vec3 position(0.0f, height + kHalfHeight, 0.0f);
-
-        return ResetFromState(position, orientation, velocity, glm::vec3(0.0f));
+        // The wind is seeded separately from the start, so the start and the wind are independent.
+        BuildWorld(seed);
+        return ResetFromLowestPoint(altitude, 0.0f, 0.0f, orientation, velocity, glm::vec3(0.0f));
     }
 
     Observation LandingEnv::ResetFromState(const glm::vec3& position, const glm::quat& orientation,
         const glm::vec3& velocity, const glm::vec3& angularVelocity) {
-        BuildWorld();
+        BuildWorld(0);
         RigidBody& rocket = world_.GetBody(rocketId_);
         rocket.SetPosition(position);
         rocket.SetOrientation(orientation);
         rocket.SetVelocity(velocity);
         rocket.SetAngularVelocity(angularVelocity);
         return GetObservation();
+    }
+
+    Observation LandingEnv::ResetFromLowestPoint(float lowestAltitude, float x, float z,
+        const glm::quat& orientation,
+        const glm::vec3& velocity,
+        const glm::vec3& angularVelocity) {
+        RigidBody probe = MakeRocketBody();
+        probe.SetPosition(glm::vec3(0.0f));
+        probe.SetOrientation(orientation);
+        const float offsetY = probe.GetLowestPoint().y;
+
+        const glm::vec3 center(x, lowestAltitude - offsetY, z);
+        return ResetFromState(center, orientation, velocity, angularVelocity);
     }
 
     Observation LandingEnv::GetObservation() const {
@@ -92,22 +117,30 @@ namespace rocketphys {
         const glm::vec3 w = r.GetAngularVelocity();
         const glm::mat3 R = r.GetRotationMatrix();
 
-        Observation o{};
-        std::size_t k = 0;
-        o[k++] = r.GetLowestPoint().y / 100.0f;
-        o[k++] = v.x / 50.0f;
-        o[k++] = v.y / 50.0f;
-        o[k++] = v.z / 50.0f;
-        o[k++] = p.x / 100.0f;
-        o[k++] = p.z / 100.0f;
+        Observation o;
+        o.reserve(ObservationSize());
+        o.push_back(r.GetLowestPoint().y / 100.0f);
+        o.push_back(v.x / 50.0f);
+        o.push_back(v.y / 50.0f);
+        o.push_back(v.z / 50.0f);
+        o.push_back(p.x / 100.0f);
+        o.push_back(p.z / 100.0f);
         for (int c = 0; c < 3; ++c) {
             for (int row = 0; row < 3; ++row) {
-                o[k++] = R[c][row];
+                o.push_back(R[c][row]);
             }
         }
-        o[k++] = w.x / 10.0f;
-        o[k++] = w.y / 10.0f;
-        o[k++] = w.z / 10.0f;
+        o.push_back(w.x / 10.0f);
+        o.push_back(w.y / 10.0f);
+        o.push_back(w.z / 10.0f);
+
+        if (config_.windSensor) {
+            // Air-relative velocity: what a pitot tube would read. Zero wind gives the body velocity.
+            const glm::vec3 relV = v - world_.GetWindVelocity();
+            o.push_back(relV.x / 50.0f);
+            o.push_back(relV.y / 50.0f);
+            o.push_back(relV.z / 50.0f);
+        }
 
         for (float& value : o) {
             value = Clamp(value, -kObsLimit, kObsLimit);
@@ -172,7 +205,6 @@ namespace rocketphys {
     StepResult LandingEnv::Step(const Action& action) {
         StepResult result;
 
-        // After the episode ends, further steps do nothing and give no reward.
         if (done_) {
             result.observation = GetObservation();
             result.terminated = true;

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <random>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -22,14 +23,17 @@ namespace rocketphys {
     //   roll:     +1 = positive Z torque (fires roll pair A),  -1 = negative Z torque (pair B).
     using Action = std::array<float, 3>;
 
-    // Observation: 18 values, all clamped to [-10, 10] and roughly in [-1, 1] in practice.
-    //   [0]     altitude of the lowest point / 100
-    //   [1..3]  velocity / 50
-    //   [4..5]  horizontal position x, z / 100
-    //   [6..14] rotation matrix, column-major, 9 values
+    // Observation layout. The base layout is 18 values. With the wind sensor on, 3 more are added.
+    //   [0]      altitude of the lowest point / 100
+    //   [1..3]   velocity / 50
+    //   [4..5]   horizontal position x, z / 100
+    //   [6..14]  rotation matrix, column-major, 9 values
     //   [15..17] angular velocity / 10
-    inline constexpr std::size_t kObsSize = 18;
-    using Observation = std::array<float, kObsSize>;
+    //   [18..20] air-relative velocity / 50 (only when the wind sensor is on)
+    // Every value is clamped to [-10, 10].
+    inline constexpr std::size_t kBaseObsSize = 18;
+    inline constexpr std::size_t kWindSensorObsSize = 3;
+    using Observation = std::vector<float>;
 
     struct RewardWeights {
         float stepCost = 0.01f;             // per policy step
@@ -49,11 +53,18 @@ namespace rocketphys {
         float maxStartHeight = 200.0f;      // m
         float maxStartSpeed = 5.0f;         // m/s, at difficulty 1
         float difficulty = 1.0f;            // 0 = upright and still, 1 = full random start
+
+        // Air. Off by default, so existing behavior is unchanged.
+        bool atmosphere = false;
+        float maxWindSpeed = 0.0f;          // m/s, peak gust speed. 0 means no wind.
+        float gustInterval = 4.0f;          // s between gust targets
+        bool windSensor = false;            // adds the air-relative velocity to the observation
+
         RewardWeights reward;
     };
 
     struct StepResult {
-        Observation observation{};
+        Observation observation;
         float reward = 0.0f;
         bool terminated = false;            // landed or crashed
         bool truncated = false;             // time limit reached
@@ -64,17 +75,26 @@ namespace rocketphys {
     public:
         explicit LandingEnv(const EnvConfig& config = EnvConfig{});
 
-        // Random start from the seed. Same seed gives the same start, bit for bit.
+        // Random start from the seed. Same seed gives the same start and the same wind, bit for bit.
         Observation Reset(std::uint32_t seed);
 
         // Explicit start, for tests, curricula, and baselines.
         Observation ResetFromState(const glm::vec3& position, const glm::quat& orientation,
             const glm::vec3& velocity, const glm::vec3& angularVelocity);
 
+        // Start with the LOWEST point at lowestAltitude (m), for any tilt.
+        Observation ResetFromLowestPoint(float lowestAltitude, float x, float z,
+            const glm::quat& orientation,
+            const glm::vec3& velocity,
+            const glm::vec3& angularVelocity);
+
         // Applies the action, holds it for actionRepeat physics steps, and returns the result.
         StepResult Step(const Action& action);
 
         Observation GetObservation() const;
+
+        // Observation size for the current config: 18, or 21 with the wind sensor.
+        std::size_t ObservationSize() const;
 
         const RigidBody& Rocket() const { return world_.GetBody(rocketId_); }
         float SimTime() const { return static_cast<float>(world_.GetTime()); }
@@ -83,7 +103,7 @@ namespace rocketphys {
         const EnvConfig& Config() const { return config_; }
 
     private:
-        void BuildWorld();
+        void BuildWorld(std::uint32_t seed);
         void ApplyAction(const Action& action);
         float ShapingReward() const;
         float TerminalReward() const;
